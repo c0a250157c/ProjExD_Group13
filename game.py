@@ -216,7 +216,7 @@ class Guard:
     def __init__(self, route: list[tuple[int, int]]) -> None:
         self.route = route
         self.route_index = 1
-        self.alert = 0.0
+        self.search_time = 0.0
         self.state = "PATROL"
         self.stunned = 0.0
         self.position = center(route[0])
@@ -229,38 +229,58 @@ class Guard:
         return distance < 185 and visible(self.position, player)
 
     def update(self, dt: float, player: pg.Vector2) -> None:
-        """視界内なら追跡し、見失ったら巡回へ戻る。"""
+        # 主人公を追跡し、見失ったら最終目撃地点で捜索して巡回へ戻る
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
             return
         if self.can_see(player):
-            self.alert = 1.8
-            self.last_seen = cell_at(player)
-        else:
-            self.alert = max(0.0, self.alert - dt)
-            # 警戒時間が残っていれば追跡中
-        if self.alert > 0:
+            # 見えているので追跡する
             self.state = "CHASE"
-        else:
-            self.state = "PATROL"
+            self.last_seen = cell_at(player)
+
+        elif self.state == "CHASE":
+            # 追跡していたのに見えなくなったので、捜索を始める
+            self.state = "SEARCH"
+            self.search_time = 3.0
         # 進行中のマスへ到達してから経路を選び直し、角の壁抜けを防ぐ。
+        # マスの中心に着いたら、次の行動を決める
         if self.next_cell is None:
             current = cell_at(self.position)
-            if self.alert > 0 and self.last_seen is not None:
+
+            # 捜索先に到着していたら、残り時間を減らす
+            if self.state == "SEARCH" and current == self.last_seen:
+                self.search_time = max(0.0, self.search_time - dt)
+
+                if self.search_time <= 0:
+                    self.state = "PATROL"
+
+            # 追跡中・捜索中は、最後に見た場所を目指す
+            if self.state in ("CHASE", "SEARCH") and self.last_seen is not None:
                 goal = self.last_seen
             else:
                 goal = self.route[self.route_index]
                 if current == goal:
                     self.route_index = (self.route_index + 1) % len(self.route)
                     goal = self.route[self.route_index]
+
             path = find_path(current, goal)
             if path:
                 self.next_cell = path[0]
+            elif current != goal and self.state == "SEARCH":
+                # 捜索先へ行く道がない場合は、巡回へ戻る
+                self.state = "PATROL"
         if self.next_cell is not None:
             target = center(self.next_cell)
             delta = target - self.position
             distance = delta.length()
-            step = (132 if self.alert > 0 else 88) * dt
+            if self.state == "CHASE":
+                speed = 132
+            elif self.state == "SEARCH":
+                speed = 100
+            else:
+                speed = 88
+
+            step = speed * dt
             if distance <= step:
                 self.position = target
                 self.next_cell = None
@@ -268,9 +288,14 @@ class Guard:
                 self.position += delta / distance * step
 
     def draw(self, screen: pg.Surface, font: pg.font.Font) -> None:
-        """追跡中は赤色と感嘆符で表示する。"""
+        # 巡回は紫、追跡は赤、捜索は黄色で描き、状態名を表示する
         p = self.position
-        color = RED if self.alert > 0 else (178, 143, 219)
+        if self.state == "CHASE":
+            color = RED
+        elif self.state == "SEARCH":
+            color = GOLD
+        else:
+            color = (178, 143, 219)
         pg.draw.circle(screen, (10, 17, 28), (int(p.x), int(p.y + 5)), 15)
         pg.draw.rect(
             screen, color, (int(p.x - 12), int(p.y - 12), 24, 24), border_radius=7
