@@ -1,11 +1,8 @@
-"""夜の学校から脱出：相談用のAI生成プロトタイプ。"""
-
+import os
 from __future__ import annotations
 
 import math
-import os
 from collections import deque
-from dataclasses import dataclass
 
 import pygame as pg
 
@@ -25,6 +22,20 @@ RED = (255, 116, 125)
 KEY_CELLS = [(22, 3), (4, 14), (22, 14)]
 EXIT_CELL = (13, 15)
 START_CELL = (4, 3)
+HEAL_CELL = (24, 13)
+MAX_HP = 3
+MAX_STAMINA = 100.0
+PLAYER_SPEED = 160
+DASH_SPEED = 245
+STAMINA_COST = 38
+STAMINA_RECOVERY = 24
+DASH_RECOVERY_THRESHOLD = 30
+INVINCIBLE_TIME = 3.0
+GUARD_STUN_TIME = 1.0
+GUARD_ROUTES = [
+    [(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)],
+    [(22, 10), (22, 14), (22, 10), (4, 10), (4, 14)],
+]
 
 
 def make_map() -> list[list[int]]:
@@ -95,24 +106,104 @@ WALLS = [pg.Rect(int(ORIGIN.x + x * TILE), int(ORIGIN.y + y * TILE), TILE, TILE)
          for y in range(ROWS) for x in range(COLS) if GRID[y][x]]
 
 
-@dataclass
+class Player:
+    """プレイヤーの移動、ダッシュ、HP、被弾後の無敵時間を管理する。"""
+
+    def __init__(self, cell: tuple[int, int]) -> None:
+        self.position = center(cell)
+        self.rect = pg.Rect(0, 0, 23, 23)
+        self.rect.center = (round(self.position.x), round(self.position.y))
+        self.hp = MAX_HP
+        self.invincible = 0.0
+        self.stamina = MAX_STAMINA
+        self.sprinting = False
+        self.exhausted = False
+
+    def move(self, movement: pg.Vector2) -> None:
+        """軸ごとに衝突を解決する。大きな移動は小分けにして壁抜けを防ぐ。"""
+        steps = max(1, math.ceil(movement.length() / 8))
+        movement = movement / steps
+        for _ in range(steps):
+            for axis in (0, 1):
+                self.position[axis] += movement[axis]
+                rect = self.rect
+                rect.center = (round(self.position.x), round(self.position.y))
+                for wall in WALLS:
+                    if rect.colliderect(wall):
+                        if axis == 0:
+                            if movement.x > 0:
+                                rect.right = wall.left
+                            elif movement.x < 0:
+                                rect.left = wall.right
+                            self.position.x = rect.centerx
+                        else:
+                            if movement.y > 0:
+                                rect.bottom = wall.top
+                            elif movement.y < 0:
+                                rect.top = wall.bottom
+                            self.position.y = rect.centery
+
+    def update(self, dt: float, keys: pg.key.ScancodeWrapper) -> None:
+        """入力に応じて移動し、スタミナと無敵時間を更新する。"""
+        self.invincible = max(0.0, self.invincible - dt)
+        direction = pg.Vector2(int(keys[pg.K_RIGHT] or keys[pg.K_d])
+                              - int(keys[pg.K_LEFT] or keys[pg.K_a]),
+                              int(keys[pg.K_DOWN] or keys[pg.K_s])
+                              - int(keys[pg.K_UP] or keys[pg.K_w]))
+        requested = bool(keys[pg.K_LSHIFT] or keys[pg.K_RSHIFT])
+        if self.stamina <= 1:
+            self.exhausted = True
+        elif self.stamina >= DASH_RECOVERY_THRESHOLD:
+            self.exhausted = False
+        self.sprinting = bool(requested and direction.length_squared() and not self.exhausted)
+        if self.sprinting:
+            self.stamina = max(0.0, self.stamina - STAMINA_COST * dt)
+        else:
+            self.stamina = min(MAX_STAMINA, self.stamina + STAMINA_RECOVERY * dt)
+        if direction.length_squared():
+            self.move(direction.normalize() * (DASH_SPEED if self.sprinting else PLAYER_SPEED) * dt)
+
+    def take_damage(self) -> bool:
+        """無敵中でなければHPを減らし、被弾したかを返す。"""
+        if self.invincible > 0:
+            return False
+        self.hp -= 1
+        self.invincible = INVINCIBLE_TIME
+        return True
+
+    def recover(self) -> bool:
+        """HPが満タンでなければ1回復する。"""
+        if self.hp >= MAX_HP:
+            return False
+        self.hp += 1
+        return True
+
+    def draw(self, screen: pg.Surface) -> None:
+        """無敵中は点滅させて描画する。"""
+        t = pg.time.get_ticks() / 1000
+        if not self.invincible or int(t * 12) % 2 == 0:
+            p = self.position
+            pg.draw.circle(screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
+            pg.draw.rect(screen, GOLD, (int(p.x-11), int(p.y-12), 22, 24), border_radius=8)
+            pg.draw.circle(screen, BG, (int(p.x-4), int(p.y-3)), 2)
+            pg.draw.circle(screen, BG, (int(p.x+4), int(p.y-3)), 2)
+            pg.draw.rect(screen, (212, 139, 72), (int(p.x-8), int(p.y+5), 16, 5), border_radius=2)
+
+
 class Guard:
-    """マスの中心間を移動する見回り役。発見した相手を短時間追う。"""
+    """マスの中心間を巡回し、発見したプレイヤーを追跡する。"""
 
-    route: list[tuple[int, int]]
-    route_index: int = 1
-    alert: float = 0.0
-    stunned: float = 0.0
-    position: pg.Vector2 | None = None
-    next_cell: tuple[int, int] | None = None
-    last_seen: tuple[int, int] | None = None
-
-    def __post_init__(self) -> None:
-        self.position = center(self.route[0])
+    def __init__(self, route: list[tuple[int, int]]) -> None:
+        self.route = route
+        self.route_index = 1
+        self.alert = 0.0
+        self.stunned = 0.0
+        self.position = center(route[0])
+        self.next_cell: tuple[int, int] | None = None
+        self.last_seen: tuple[int, int] | None = None
 
     def update(self, dt: float, player: pg.Vector2) -> None:
         """視界内なら追跡し、見失ったら巡回へ戻る。"""
-        assert self.position is not None
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
             return
@@ -145,6 +236,19 @@ class Guard:
             elif distance:
                 self.position += delta / distance * step
 
+    def draw(self, screen: pg.Surface, font: pg.font.Font) -> None:
+        """追跡中は赤色と感嘆符で表示する。"""
+        p = self.position
+        color = RED if self.alert > 0 else (178, 143, 219)
+        pg.draw.circle(screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
+        pg.draw.rect(screen, color, (int(p.x-12), int(p.y-12), 24, 24), border_radius=7)
+        pg.draw.rect(screen, (37, 36, 57), (int(p.x-13), int(p.y-12), 26, 7), border_radius=2)
+        pg.draw.circle(screen, BG, (int(p.x-4), int(p.y)), 2)
+        pg.draw.circle(screen, BG, (int(p.x+4), int(p.y)), 2)
+        if self.alert > 0:
+            image = font.render('!', True, RED)
+            screen.blit(image, image.get_rect(center=(int(p.x), int(p.y-24))))
+
 
 class Game:
     """タイトル・プレイ・一時停止・結果を含むゲーム本体。"""
@@ -162,17 +266,11 @@ class Game:
 
     def reset(self) -> None:
         """再挑戦時にもプレイに関わる全状態を初期化する。"""
-        self.player = center(START_CELL)
-        self.hp = 3
+        self.player = Player(START_CELL)
         self.time_left = TIME_LIMIT
-        self.invincible = 0.0
-        self.stamina = 100.0
-        self.sprinting = False
-        self.exhausted = False
         self.keys: set[tuple[int, int]] = set()
         self.heal = True
-        self.guards = [Guard([(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)]),
-                       Guard([(22, 10), (22, 14), (22, 10), (4, 10), (4, 14)])]
+        self.guards = [Guard(route) for route in GUARD_ROUTES]
         self.state = 'playing'
         self.message = '教室を探索して、3つの鍵を集めよう'
         self.message_time = 4.0
@@ -210,79 +308,49 @@ class Game:
                 elif self.state == 'paused':
                     self.state = 'playing'
 
-    def move_player(self, movement: pg.Vector2) -> None:
-        """軸ごとに衝突を解決する。大きな移動は小分けにして壁抜けを防ぐ。"""
-        steps = max(1, math.ceil(movement.length() / 8))
-        movement = movement / steps
-        for _ in range(steps):
-            for axis in (0, 1):
-                self.player[axis] += movement[axis]
-                rect = pg.Rect(0, 0, 23, 23)
-                rect.center = (round(self.player.x), round(self.player.y))
-                for wall in WALLS:
-                    if rect.colliderect(wall):
-                        if axis == 0:
-                            if movement.x > 0:
-                                rect.right = wall.left
-                            elif movement.x < 0:
-                                rect.left = wall.right
-                            self.player.x = rect.centerx
-                        else:
-                            if movement.y > 0:
-                                rect.bottom = wall.top
-                            elif movement.y < 0:
-                                rect.top = wall.bottom
-                            self.player.y = rect.centery
-
     def update(self, dt: float, keys: pg.key.ScancodeWrapper | None = None) -> None:
         """プレイ中だけ時間・移動・取得・接触・勝敗を更新する。"""
         if self.state != 'playing':
             return
         keys = pg.key.get_pressed() if keys is None else keys
         self.time_left = max(0.0, self.time_left - dt)
-        self.invincible = max(0.0, self.invincible - dt)
         self.message_time = max(0.0, self.message_time - dt)
-        direction = pg.Vector2(int(keys[pg.K_RIGHT] or keys[pg.K_d])
-                              - int(keys[pg.K_LEFT] or keys[pg.K_a]),
-                              int(keys[pg.K_DOWN] or keys[pg.K_s])
-                              - int(keys[pg.K_UP] or keys[pg.K_w]))
-        requested = bool(keys[pg.K_LSHIFT] or keys[pg.K_RSHIFT])
-        if self.stamina <= 1:
-            self.exhausted = True
-        elif self.stamina >= 30:
-            self.exhausted = False
-        self.sprinting = bool(requested and direction.length_squared() and not self.exhausted)
-        if self.sprinting:
-            self.stamina = max(0.0, self.stamina - 38 * dt)
-        else:
-            self.stamina = min(100.0, self.stamina + 24 * dt)
-        if direction.length_squared():
-            self.move_player(direction.normalize() * (245 if self.sprinting else 160) * dt)
+        self.player.update(dt, keys)
+        self.collect_items()
+        self.update_guards(dt)
+        self.check_result()
+
+    def collect_items(self) -> None:
+        """鍵と、一度だけ使える回復アイテムの取得を処理する。"""
         for key in KEY_CELLS:
-            if key not in self.keys and self.player.distance_to(center(key)) < 24:
+            if key not in self.keys and self.player.position.distance_to(center(key)) < 24:
                 self.keys.add(key)
-                self.say('鍵がそろった！ 下中央の出口へ' if len(self.keys) == 3
-                         else f'鍵を見つけた！ あと{3-len(self.keys)}個')
-        if self.heal and self.hp < 3 and self.player.distance_to(center((24, 13))) < 25:
-            self.hp += 1
+                self.say('鍵がそろった！ 下中央の出口へ' if len(self.keys) == len(KEY_CELLS)
+                         else f'鍵を見つけた！ あと{len(KEY_CELLS)-len(self.keys)}個')
+        if (self.heal and self.player.position.distance_to(center(HEAL_CELL)) < 25
+                and self.player.recover()):
             self.heal = False
             self.say('保健室でHPが1回復した')
+
+    def update_guards(self, dt: float) -> None:
+        """見回り役を移動させ、プレイヤーとの接触を処理する。"""
         for guard in self.guards:
-            guard.update(dt, self.player)
-            if self.invincible == 0 and self.player.distance_to(guard.position) < 25:
-                self.hp -= 1
-                self.invincible = 3.0
-                guard.stunned = 1.0
+            guard.update(dt, self.player.position)
+            if self.player.position.distance_to(guard.position) < 25 and self.player.take_damage():
+                guard.stunned = GUARD_STUN_TIME
                 self.say('見つかった！ 点滅している間に逃げよう')
-        if self.hp <= 0:
+
+    def check_result(self) -> None:
+        """HP、残り時間、出口への到達から勝敗を判定する。"""
+        if self.player.hp <= 0:
             self.state, self.reason = 'lost', '見回りに捕まってしまった'
         elif self.time_left <= 0:
             self.state, self.reason = 'lost', '時間切れ。校門が閉まってしまった'
-        elif self.player.distance_to(center(EXIT_CELL)) < 25:
-            if len(self.keys) == 3:
+        elif self.player.position.distance_to(center(EXIT_CELL)) < 25:
+            if len(self.keys) == len(KEY_CELLS):
                 self.state = 'won'
             else:
-                self.say(f'出口は施錠中。あと{3-len(self.keys)}個の鍵が必要')
+                self.say(f'出口は施錠中。あと{len(KEY_CELLS)-len(self.keys)}個の鍵が必要')
 
     def text(self, value: str, position: tuple[int, int], size: int = 18,
              color: tuple[int, int, int] = TEXT, centered: bool = False) -> None:
@@ -299,7 +367,7 @@ class Game:
         pg.draw.line(self.screen, color, (x + 8, y + 8), (x + 12, y + 4), 3)
 
     def draw_map(self) -> None:
-        """部屋・壁・アイテム・キャラクターを描画する。"""
+        """部屋・壁・アイテム・出口を描画する。"""
         t = pg.time.get_ticks() / 1000
         for y, row in enumerate(GRID):
             for x, wall in enumerate(row):
@@ -326,95 +394,88 @@ class Game:
                 pg.draw.circle(self.screen, (77, 66, 42), p, 17 + int(2 * math.sin(t * 3)))
                 self.draw_key(p, GOLD)
         if self.heal:
-            p = center((24, 13))
+            p = center(HEAL_CELL)
             pg.draw.rect(self.screen, (41, 94, 84), (int(p.x-12), int(p.y-12), 24, 24), border_radius=5)
             pg.draw.line(self.screen, TEAL, (p.x-6, p.y), (p.x+6, p.y), 4)
             pg.draw.line(self.screen, TEAL, (p.x, p.y-6), (p.x, p.y+6), 4)
         p = center(EXIT_CELL)
-        unlocked = len(self.keys) == 3
+        unlocked = len(self.keys) == len(KEY_CELLS)
         pg.draw.rect(self.screen, (37, 105, 92) if unlocked else (70, 58, 51),
                      (int(p.x-30), int(p.y-15), 60, 30), border_radius=5)
         self.text('EXIT' if unlocked else 'LOCK', (int(p.x), int(p.y)), 14,
                   TEAL if unlocked else GOLD, True)
-        for guard in self.guards:
-            p = guard.position
-            assert p is not None
-            color = RED if guard.alert > 0 else (178, 143, 219)
-            pg.draw.circle(self.screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
-            pg.draw.rect(self.screen, color, (int(p.x-12), int(p.y-12), 24, 24), border_radius=7)
-            pg.draw.rect(self.screen, (37, 36, 57), (int(p.x-13), int(p.y-12), 26, 7), border_radius=2)
-            pg.draw.circle(self.screen, BG, (int(p.x-4), int(p.y)), 2)
-            pg.draw.circle(self.screen, BG, (int(p.x+4), int(p.y)), 2)
-            if guard.alert > 0:
-                self.text('!', (int(p.x), int(p.y-24)), 20, RED, True)
-        if not self.invincible or int(t * 12) % 2 == 0:
-            p = self.player
-            pg.draw.circle(self.screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
-            pg.draw.rect(self.screen, GOLD, (int(p.x-11), int(p.y-12), 22, 24), border_radius=8)
-            pg.draw.circle(self.screen, BG, (int(p.x-4), int(p.y-3)), 2)
-            pg.draw.circle(self.screen, BG, (int(p.x+4), int(p.y-3)), 2)
-            pg.draw.rect(self.screen, (212, 139, 72), (int(p.x-8), int(p.y+5), 16, 5), border_radius=2)
 
-    def draw(self) -> None:
-        """ゲーム画面と、状態に応じた案内を描画する。"""
-        self.screen.fill(BG)
+    def draw_hud(self) -> None:
+        """鍵、HP、残り時間、スタミナを表示する。"""
         self.text('NIGHT SCHOOL', (54, 23), 24)
         self.text('夜の学校から脱出', (55, 60), 16, MUTED)
-        self.text(f'KEYS  {len(self.keys)} / 3', (400, 28), 24, GOLD)
+        self.text(f'KEYS  {len(self.keys)} / {len(KEY_CELLS)}', (400, 28), 24, GOLD)
         self.text('HP', (620, 34), 16, MUTED)
-        for i in range(3):
-            pg.draw.rect(self.screen, RED if i < self.hp else (55, 46, 57),
+        for i in range(MAX_HP):
+            pg.draw.rect(self.screen, RED if i < self.player.hp else (55, 46, 57),
                          (658+i*25, 34, 17, 17), border_radius=5)
         seconds = math.ceil(self.time_left)
         self.text(f'{seconds//60:02}:{seconds%60:02}', (884, 20), 32,
                   RED if seconds < 30 else TEXT)
         pg.draw.rect(self.screen, (38, 53, 67), (620, 69, 110, 6), border_radius=3)
-        if self.stamina > 0:
-            pg.draw.rect(self.screen, TEAL, (620, 69, round(110*self.stamina/100), 6), border_radius=3)
+        if self.player.stamina > 0:
+            pg.draw.rect(self.screen, TEAL, (620, 69, round(110*self.player.stamina/MAX_STAMINA), 6), border_radius=3)
         self.text('DASH', (740, 60), 14, MUTED)
         objective = self.message if self.message_time > 0 else (
-            '下中央の出口へ向かおう！' if len(self.keys) == 3 else '鍵を3つ集めて、下中央の出口から脱出')
+            '下中央の出口へ向かおう！' if len(self.keys) == len(KEY_CELLS) else '鍵を3つ集めて、下中央の出口から脱出')
         self.text(objective, (55, 98), 16, TEAL)
+
+    def draw_overlay(self) -> None:
+        """タイトル、一時停止、結果画面を重ねて表示する。"""
+        shade = pg.Surface((WIDTH, HEIGHT), pg.SRCALPHA)
+        shade.fill((5, 11, 20, 195))
+        self.screen.blit(shade, (0, 0))
+        panel = pg.Rect(220, 180, 640, 465)
+        pg.draw.rect(self.screen, (22, 35, 51), panel, border_radius=22)
+        pg.draw.rect(self.screen, (68, 94, 112), panel, 1, border_radius=22)
+        if self.state == 'title':
+            self.text('放課後、最後のチャイム。', (540, 228), 18, TEAL, True)
+            self.text('夜の学校から脱出', (540, 295), 42, TEXT, True)
+            lines = ['3つの鍵を集めて、下中央の出口を開こう。',
+                     '紫の見回り役は、近づくと赤くなって追ってくる。',
+                     'Shiftでダッシュ。保健室の＋でHPを1回復。',
+                     '制限時間は120秒。捕まるとHPが1減る。']
+            label = '探索を始める  [Enter]'
+        elif self.state == 'paused':
+            self.text('PAUSED', (540, 270), 42, TEAL, True)
+            lines = ['一時停止中です。残り時間は減りません。',
+                     'WASD / 矢印：移動　　Shift：ダッシュ',
+                     '鍵を3つ集めて、下中央の出口へ。']
+            label = '探索に戻る  [Esc]'
+        elif self.state == 'won':
+            self.text('脱出成功！', (540, 278), 42, TEAL, True)
+            elapsed = TIME_LIMIT - self.time_left
+            lines = [f'脱出時間  {elapsed:.1f}秒', f'残りHP  {self.player.hp} / {MAX_HP}',
+                     '鍵をそろえて、無事に学校を出られた。']
+            label = 'もう一度遊ぶ  [R]'
+        else:
+            self.text('脱出失敗', (540, 278), 42, RED, True)
+            lines = [self.reason, f'集めた鍵  {len(self.keys)} / {len(KEY_CELLS)}',
+                     '見回り役の進路を見て、ダッシュで切り抜けよう。']
+            label = 'もう一度挑戦  [R]'
+        for i, line in enumerate(lines):
+            self.text(line, (540, 368+i*34), 18, MUTED, True)
+        pg.draw.rect(self.screen, TEAL, self.button, border_radius=12)
+        self.text(label, self.button.center, 20, BG, True)
+        self.text('終了するにはウィンドウの × を押す', (540, 613), 14, MUTED, True)
+
+    def draw(self) -> None:
+        """背景、キャラクター、案内を順に描画する。"""
+        self.screen.fill(BG)
+        self.draw_hud()
         self.draw_map()
+        for guard in self.guards:
+            guard.draw(self.screen, self.fonts[20])
+        self.player.draw(self.screen)
         self.text('移動  WASD / 矢印     ダッシュ  Shift     一時停止  Esc', (54, 762), 16, MUTED)
         self.text('PROTOTYPE / AI生成の試作', (800, 765), 14, MUTED)
         if self.state != 'playing':
-            shade = pg.Surface((WIDTH, HEIGHT), pg.SRCALPHA)
-            shade.fill((5, 11, 20, 195))
-            self.screen.blit(shade, (0, 0))
-            panel = pg.Rect(220, 180, 640, 465)
-            pg.draw.rect(self.screen, (22, 35, 51), panel, border_radius=22)
-            pg.draw.rect(self.screen, (68, 94, 112), panel, 1, border_radius=22)
-            if self.state == 'title':
-                self.text('放課後、最後のチャイム。', (540, 228), 18, TEAL, True)
-                self.text('夜の学校から脱出', (540, 295), 42, TEXT, True)
-                lines = ['3つの鍵を集めて、下中央の出口を開こう。',
-                         '紫の見回り役は、近づくと赤くなって追ってくる。',
-                         'Shiftでダッシュ。保健室の＋でHPを1回復。',
-                         '制限時間は120秒。捕まるとHPが1減る。']
-                label = '探索を始める  [Enter]'
-            elif self.state == 'paused':
-                self.text('PAUSED', (540, 270), 42, TEAL, True)
-                lines = ['一時停止中です。残り時間は減りません。',
-                         'WASD / 矢印：移動　　Shift：ダッシュ',
-                         '鍵を3つ集めて、下中央の出口へ。']
-                label = '探索に戻る  [Esc]'
-            elif self.state == 'won':
-                self.text('脱出成功！', (540, 278), 42, TEAL, True)
-                elapsed = TIME_LIMIT - self.time_left
-                lines = [f'脱出時間  {elapsed:.1f}秒', f'残りHP  {self.hp} / 3',
-                         '鍵をそろえて、無事に学校を出られた。']
-                label = 'もう一度遊ぶ  [R]'
-            else:
-                self.text('脱出失敗', (540, 278), 42, RED, True)
-                lines = [self.reason, f'集めた鍵  {len(self.keys)} / 3',
-                         '見回り役の進路を見て、ダッシュで切り抜けよう。']
-                label = 'もう一度挑戦  [R]'
-            for i, line in enumerate(lines):
-                self.text(line, (540, 368+i*34), 18, MUTED, True)
-            pg.draw.rect(self.screen, TEAL, self.button, border_radius=12)
-            self.text(label, self.button.center, 20, BG, True)
-            self.text('終了するにはウィンドウの × を押す', (540, 613), 14, MUTED, True)
+            self.draw_overlay()
         pg.display.flip()
 
     def run(self) -> None:

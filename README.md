@@ -1,8 +1,5 @@
 # 夜の学校から脱出 - School Escape Demo
 
-プロジェクト演習II・第13グループでゲーム案を検討するための、遊べる参考用プロトタイプです。
-**CodexによるAI生成の試作品です。正式なグループ成果物や、個人が実装した追加機能を示すものではありません。**
-
 ![ゲーム画面](preview_play.png)
 
 ## どんなゲーム？
@@ -75,10 +72,13 @@ python3 -m venv .venv
 - `make_map` / `GRID`：学校の壁・部屋・通路
 - `KEY_CELLS` / `EXIT_CELL` / `START_CELL`：鍵・出口・開始位置
 - `find_path` / `visible`：経路探索・視界判定
-- `Guard`：巡回と追跡
+- `Player`：移動・壁との衝突・ダッシュ・HP・無敵時間・描画
+- `Guard`：巡回・追跡・停止時間・描画
+- `MAX_HP` / `PLAYER_SPEED` / `DASH_SPEED` など：ゲーム調整用の定数
 - `Game.reset`：初期化・再挑戦
-- `Game.update`：移動、アイテム、被弾、勝敗
-- `Game.draw_map` / `draw`：マップ・表示・タイトル・結果画面
+- `Game.update`：各処理の呼び出しと残り時間の管理
+- `Game.collect_items` / `update_guards` / `check_result`：アイテム・敵との接触・勝敗
+- `Game.draw_map` / `draw_hud` / `draw_overlay`：マップ・ステータス・タイトルと結果画面
 
 ## 確認したこと
 
@@ -92,6 +92,3 @@ python3 -m venv .venv
 - 敵の速さやダッシュの強さはちょうどよいか？
 - 鍵のランダム配置、懐中電灯、隠れ場所などを追加するか？
 - 正式に採用する場合、共通ベースと各自の担当機能をどう分けるか？
-
-正式な共同開発リポジトリ：<https://github.com/kusupon/ProjExD_Group13>
-この参考用リポジトリから正式な開発先へ自動で同期されることはありません。
