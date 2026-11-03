@@ -1,7 +1,7 @@
-import os
 from __future__ import annotations
 
 import math
+import os
 from collections import deque
 
 import pygame as pg
