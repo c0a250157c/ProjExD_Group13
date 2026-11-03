@@ -145,6 +145,111 @@ class Guard:
             elif distance:
                 self.position += delta / distance * step
 
+@dataclass
+class Door:
+    door_id: str
+    cell: tuple[int, int]
+    key_id: str | None = None
+
+@dataclass
+class Switch:
+    switch_id: str
+    cell: tuple[int, int]
+    door_ids: tuple[str,...]
+
+class Stage:
+    def __init__(self):
+        self.keys = {
+            "red": (22,3),
+            "blue": (4,14),
+            "yellow": (22,14)
+        }
+        self.required_keys = {"red","blue","yellow"}
+        self.doors = [
+            Door("red_gate",(22,11),"red"),
+            Door("blue_gate",(13,5),"blue"),
+            Door("side_gate",(13,11))
+        ]
+        self.switches = [
+            Switch("switch_1",(12,3),("side_gate",))
+        ]
+
+
+class World:
+    def __init__(self, stage):
+        self.stage = stage
+        self.open_doors = set()
+
+    def center(self, cell):
+        return center(cell)
+
+    def open_door(self, door_id):
+        if door_id in self.open_doors:
+            return False
+        self.open_doors.add(door_id)
+        return True
+
+    def is_door_closed(self, cell):
+        for door in self.stage.doors:
+            if door.cell == cell:
+                return door.door_id not in self.open_doors
+        return False
+
+
+
+class Gimmicks:
+    def __init__(self, world):
+        self.world = world
+        self.inventory = set()
+        self.used_switches = set()
+
+    def update(self, player, hidden=False):
+        if hidden:
+            return
+        for key_id, cell in self.world.stage.keys.items():
+            if key_id in self.inventory:
+                continue
+            distance = player.distance_to(
+                self.world.center(cell)
+            )
+            if distance < 24:
+                self.inventory.add(key_id)
+
+    def draw_keys(self, screen, game):
+        KEY_COLORS = {
+            "red": (255, 100, 100),
+            "blue": (100, 160, 255),
+            "yellow": (255, 210, 80)
+        }
+
+        for key_id, cell in self.world.stage.keys.items():
+            if key_id in self.inventory:
+                continue
+
+            position = self.world.center(cell)
+            color = KEY_COLORS[key_id]
+            game.draw_key(position, color)
+
+    def handle_event(self, event, player, hidden=False):
+        if event.type != pg.KEYDOWN:
+            return False
+        if event.key != pg.K_f or hidden:
+            return False
+        for switch in self.world.stage.switches:
+            if switch.switch_id in self.used_switches:
+                continue
+            distance = player.distance_to(
+                self.world.center(switch.cell)
+            )
+            if distance < 24:
+                for door_id in switch.door_ids:
+                    self.world.open_door(door_id)
+                self.used_switches.add(switch.switch_id)
+                return True
+        return False
+
+    def can_exit(self):
+        return self.world.stage.required_keys <= self.inventory
 
 class Game:
     """タイトル・プレイ・一時停止・結果を含むゲーム本体。"""
@@ -169,7 +274,10 @@ class Game:
         self.stamina = 100.0
         self.sprinting = False
         self.exhausted = False
-        self.keys: set[tuple[int, int]] = set()
+        self.stage = Stage()
+        self.world = World(self.stage)
+        self.gimmicks = Gimmicks(self.world)
+        self.hidden = False
         self.heal = True
         self.guards = [Guard([(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)]),
                        Guard([(22, 10), (22, 14), (22, 10), (4, 10), (4, 14)])]
@@ -195,6 +303,11 @@ class Game:
                     self.state = 'playing'
                 else:
                     self.alive = False
+            elif event.key == pg.K_f and self.state == 'playing':
+                        if self.gimmicks.handle_event(
+                            event, self.player, self.hidden
+                        ):
+                            self.say('スイッチを操作した！ ドアが開いた！')
             elif event.key in (pg.K_RETURN, pg.K_SPACE) and self.state == 'title':
                 self.reset()
             elif event.key in (pg.K_r, pg.K_RETURN) and self.state in ('won', 'lost'):
@@ -219,7 +332,17 @@ class Game:
                 self.player[axis] += movement[axis]
                 rect = pg.Rect(0, 0, 23, 23)
                 rect.center = (round(self.player.x), round(self.player.y))
-                for wall in WALLS:
+                door_walls = [
+                    pg.Rect(
+                        int(ORIGIN.x + door.cell[0] * TILE),
+                        int(ORIGIN.y + door.cell[1] * TILE),
+                        TILE,
+                        TILE
+                    )
+                    for door in self.stage.doors
+                    if self.world.is_door_closed(door.cell)
+                ]
+                for wall in WALLS + door_walls:
                     if rect.colliderect(wall):
                         if axis == 0:
                             if movement.x > 0:
@@ -258,11 +381,15 @@ class Game:
             self.stamina = min(100.0, self.stamina + 24 * dt)
         if direction.length_squared():
             self.move_player(direction.normalize() * (245 if self.sprinting else 160) * dt)
-        for key in KEY_CELLS:
-            if key not in self.keys and self.player.distance_to(center(key)) < 24:
-                self.keys.add(key)
-                self.say('鍵がそろった！ 下中央の出口へ' if len(self.keys) == 3
-                         else f'鍵を見つけた！ あと{3-len(self.keys)}個')
+        before = set(self.gimmicks.inventory)
+        self.gimmicks.update(self.player, self.hidden)
+        new_keys = self.gimmicks.inventory - before
+        for key_id in new_keys:
+            remaining = len(self.stage.required_keys - self.gimmicks.inventory)
+            if remaining == 0:
+                self.say('鍵がそろった！ 下中央の出口へ')
+            else:
+                self.say(f'鍵を見つけた！ あと{remaining}個')
         if self.heal and self.hp < 3 and self.player.distance_to(center((24, 13))) < 25:
             self.hp += 1
             self.heal = False
@@ -279,10 +406,11 @@ class Game:
         elif self.time_left <= 0:
             self.state, self.reason = 'lost', '時間切れ。校門が閉まってしまった'
         elif self.player.distance_to(center(EXIT_CELL)) < 25:
-            if len(self.keys) == 3:
+            if self.gimmicks.can_exit():
                 self.state = 'won'
             else:
-                self.say(f'出口は施錠中。あと{3-len(self.keys)}個の鍵が必要')
+                remaining = len(self.stage.required_keys - self.gimmicks.inventory)
+                self.say(f'出口は施錠中。あと{remaining}個の鍵が必要')
 
     def text(self, value: str, position: tuple[int, int], size: int = 18,
              color: tuple[int, int, int] = TEXT, centered: bool = False) -> None:
@@ -297,6 +425,15 @@ class Game:
         pg.draw.circle(self.screen, color, (x - 5, y - 3), 7, 3)
         pg.draw.line(self.screen, color, (x, y + 1), (x + 10, y + 11), 4)
         pg.draw.line(self.screen, color, (x + 8, y + 8), (x + 12, y + 4), 3)
+
+    def draw_keys(self, screen):
+        KEY_COLORS = {"red": (255, 100, 100),"blue": (100, 160, 255),"yellow": (255, 210, 80)}
+        for key_id, cell in self.world.stage.keys.items():
+            if key_id in self.inventory:
+                continue
+        position = self.world.center(cell)
+        color = KEY_COLORS[key_id]
+        self.draw_key(screen, position, color)
 
     def draw_map(self) -> None:
         """部屋・壁・アイテム・キャラクターを描画する。"""
@@ -320,18 +457,35 @@ class Game:
         for cell in [(2, 2), (6, 2), (11, 2), (15, 2), (20, 2), (24, 2)]:
             p = center(cell)
             pg.draw.rect(self.screen, (54, 73, 85), (int(p.x-12), int(p.y-8), 24, 16), border_radius=3)
-        for cell in KEY_CELLS:
-            if cell not in self.keys:
-                p = center(cell)
-                pg.draw.circle(self.screen, (77, 66, 42), p, 17 + int(2 * math.sin(t * 3)))
-                self.draw_key(p, GOLD)
+        self.gimmicks.draw_keys(self.screen, self)
+        # ドアの描画
+        for door in self.stage.doors:
+            if self.world.is_door_closed(door.cell):
+                p = center(door.cell)
+                if door.key_id == "red":
+                    color = (220, 75, 75)
+                elif door.key_id == "blue":
+                    color = (75, 130, 230)
+                else:
+                    color = (170, 130, 210)
+                pg.draw.rect(self.screen,color,(int(p.x - 15), int(p.y - 15), 30, 30),border_radius=5)
+                pg.draw.circle(self.screen, GOLD,(int(p.x), int(p.y)), 3)
+        # スイッチの描画
+        for switch in self.stage.switches:
+            p = center(switch.cell)
+            color = (
+                TEAL if switch.switch_id in self.gimmicks.used_switches
+                else (240, 190, 70)
+            )
+            pg.draw.circle(self.screen, color,(int(p.x), int(p.y)), 11)
+            pg.draw.circle(self.screen, BG,(int(p.x), int(p.y)), 5)
         if self.heal:
             p = center((24, 13))
             pg.draw.rect(self.screen, (41, 94, 84), (int(p.x-12), int(p.y-12), 24, 24), border_radius=5)
             pg.draw.line(self.screen, TEAL, (p.x-6, p.y), (p.x+6, p.y), 4)
             pg.draw.line(self.screen, TEAL, (p.x, p.y-6), (p.x, p.y+6), 4)
         p = center(EXIT_CELL)
-        unlocked = len(self.keys) == 3
+        unlocked = self.gimmicks.can_exit()
         pg.draw.rect(self.screen, (37, 105, 92) if unlocked else (70, 58, 51),
                      (int(p.x-30), int(p.y-15), 60, 30), border_radius=5)
         self.text('EXIT' if unlocked else 'LOCK', (int(p.x), int(p.y)), 14,
@@ -354,13 +508,24 @@ class Game:
             pg.draw.circle(self.screen, BG, (int(p.x-4), int(p.y-3)), 2)
             pg.draw.circle(self.screen, BG, (int(p.x+4), int(p.y-3)), 2)
             pg.draw.rect(self.screen, (212, 139, 72), (int(p.x-8), int(p.y+5), 16, 5), border_radius=2)
+        # 鍵を持っている場合、近づくとドアが開く
+        for door in self.stage.doors:
+            if door.key_id is None:
+                continue
+            if door.key_id in self.gimmicks.inventory:
+                distance = self.player.distance_to(
+                    self.world.center(door.cell)
+                )
+                if distance < 40:
+                    if self.world.open_door(door.door_id):
+                        self.say(f'{door.key_id}の鍵でドアを開けた！')
 
     def draw(self) -> None:
         """ゲーム画面と、状態に応じた案内を描画する。"""
         self.screen.fill(BG)
         self.text('NIGHT SCHOOL', (54, 23), 24)
         self.text('夜の学校から脱出', (55, 60), 16, MUTED)
-        self.text(f'KEYS  {len(self.keys)} / 3', (400, 28), 24, GOLD)
+        self.text(f'KEYS  {len(self.gimmicks.inventory)} / {len(self.stage.required_keys)}',(400, 28), 24, GOLD)
         self.text('HP', (620, 34), 16, MUTED)
         for i in range(3):
             pg.draw.rect(self.screen, RED if i < self.hp else (55, 46, 57),
@@ -373,7 +538,7 @@ class Game:
             pg.draw.rect(self.screen, TEAL, (620, 69, round(110*self.stamina/100), 6), border_radius=3)
         self.text('DASH', (740, 60), 14, MUTED)
         objective = self.message if self.message_time > 0 else (
-            '下中央の出口へ向かおう！' if len(self.keys) == 3 else '鍵を3つ集めて、下中央の出口から脱出')
+            '下中央の出口へ向かおう！' if self.gimmicks.can_exit() else '鍵を3つ集めて、下中央の出口から脱出')
         self.text(objective, (55, 98), 16, TEAL)
         self.draw_map()
         self.text('移動  WASD / 矢印     ダッシュ  Shift     一時停止  Esc', (54, 762), 16, MUTED)
@@ -407,8 +572,7 @@ class Game:
                 label = 'もう一度遊ぶ  [R]'
             else:
                 self.text('脱出失敗', (540, 278), 42, RED, True)
-                lines = [self.reason, f'集めた鍵  {len(self.keys)} / 3',
-                         '見回り役の進路を見て、ダッシュで切り抜けよう。']
+                lines = [self.reason,f'集めた鍵  {len(self.gimmicks.inventory)} / {len(self.stage.required_keys)}','見回り役の進路を見て、ダッシュで切り抜けよう。']
                 label = 'もう一度挑戦  [R]'
             for i, line in enumerate(lines):
                 self.text(line, (540, 368+i*34), 18, MUTED, True)
