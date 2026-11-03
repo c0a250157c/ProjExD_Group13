@@ -232,7 +232,7 @@ class Guard:
         return distance < 185 and visible(self.position, player)
 
     def get_search_targets(self) -> list[tuple[int, int]]:
-        """最後に見たマスの上下左右から、通れるマスを選ぶ。"""
+        """捜索先の上下左右から、通れるマスを選ぶ。"""
         if self.search_center is None:
             return []
 
@@ -257,7 +257,7 @@ class Guard:
         if self.search_center is None:
             return current
 
-        # まず最後に見た場所へ向かう
+        # まず捜索先へ向かう
         if not self.search_arrived:
             if current != self.search_center:
                 return self.search_center
@@ -301,7 +301,7 @@ class Guard:
         self.search_targets = self.get_search_targets()
 
     def update(self, dt: float, player: pg.Vector2) -> None:
-        # 主人公を追跡し、見失ったら最終目撃地点で捜索して巡回へ戻る
+        """視認と現在の状態に応じて、追跡・捜索・巡回を更新する。"""
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
             return
@@ -363,7 +363,7 @@ class Guard:
                 self.position += delta / distance * step
 
     def draw(self, screen: pg.Surface, font: pg.font.Font) -> None:
-        # 巡回は紫、追跡は赤、捜索は黄色で描き、状態名を表示する
+        """巡回は紫、追跡は赤、捜索は黄色で描き、状態名を表示する。"""
         p = self.position
         if self.state == "CHASE":
             color = RED
@@ -380,7 +380,7 @@ class Guard:
         )
         pg.draw.circle(screen, BG, (int(p.x - 4), int(p.y)), 2)
         pg.draw.circle(screen, BG, (int(p.x + 4), int(p.y)), 2)
-        # 敵の頭上に状態を表示表示する
+        # 敵の頭上に状態名を表示する
         image = font.render(self.state, True, color)
         screen.blit(image, image.get_rect(center=(int(p.x), int(p.y - 24))))
 
