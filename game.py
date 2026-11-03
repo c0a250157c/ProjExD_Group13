@@ -217,6 +217,8 @@ class Guard:
         self.route = route
         self.route_index = 1
         self.search_time = 0.0
+        self.search_arrived = False
+        self.search_targets: list[tuple[int, int]] = []
         self.state = "PATROL"
         self.stunned = 0.0
         self.position = center(route[0])
@@ -227,6 +229,50 @@ class Guard:
         """主人公が近くにいて、壁に遮られていなければTrue。"""
         distance = self.position.distance_to(player)
         return distance < 185 and visible(self.position, player)
+
+    def get_search_targets(self) -> list[tuple[int, int]]:
+        """最後に見たマスの上下左右から、通れるマスを選ぶ。"""
+        if self.last_seen is None:
+            return []
+
+        x, y = self.last_seen
+
+        candidates = [
+            (x, y - 1),  # 上
+            (x, y + 1),  # 下
+            (x - 1, y),  # 左
+            (x + 1, y),  # 右
+        ]
+
+        targets = []
+        for cell in candidates:
+            if walkable(cell):
+                targets.append(cell)
+
+        return targets
+
+    def get_search_goal(self, current: tuple[int, int]) -> tuple[int, int]:
+        """捜索中に次に向かうマスを決める。"""
+        if self.last_seen is None:
+            return current
+
+        # まず最後に見た場所へ向かう
+        if not self.search_arrived:
+            if current != self.last_seen:
+                return self.last_seen
+
+            self.search_arrived = True
+
+        # 先頭の候補へ到着したら、一覧から取り除く
+        if self.search_targets and current == self.search_targets[0]:
+            self.search_targets.pop(0)
+
+        # 候補が残っていれば、先頭の場所へ向かう
+        if self.search_targets:
+            return self.search_targets[0]
+
+        # 全部調べ終わったら、その場で待つ
+        return current
 
     def update(self, dt: float, player: pg.Vector2) -> None:
         # 主人公を追跡し、見失ったら最終目撃地点で捜索して巡回へ戻る
@@ -239,24 +285,30 @@ class Guard:
             self.last_seen = cell_at(player)
 
         elif self.state == "CHASE":
-            # 追跡していたのに見えなくなったので、捜索を始める
+            # 見失ったので、最後に見た場所を探しに行く
             self.state = "SEARCH"
             self.search_time = 3.0
+            self.search_arrived = False
+            self.search_targets = self.get_search_targets()
         # 進行中のマスへ到達してから経路を選び直し、角の壁抜けを防ぐ。
         # マスの中心に着いたら、次の行動を決める
+
+        # 到着後は、周囲を歩いている間も捜索時間を減らす
+        if self.state == "SEARCH" and self.search_arrived:
+            self.search_time = max(0.0, self.search_time - dt)
+
+            if self.search_time <= 0:
+                self.state = "PATROL"
+
         if self.next_cell is None:
             current = cell_at(self.position)
 
-            # 捜索先に到着していたら、残り時間を減らす
-            if self.state == "SEARCH" and current == self.last_seen:
-                self.search_time = max(0.0, self.search_time - dt)
-
-                if self.search_time <= 0:
-                    self.state = "PATROL"
-
-            # 追跡中・捜索中は、最後に見た場所を目指す
-            if self.state in ("CHASE", "SEARCH") and self.last_seen is not None:
+            if self.state == "CHASE" and self.last_seen is not None:
                 goal = self.last_seen
+
+            elif self.state == "SEARCH":
+                goal = self.get_search_goal(current)
+
             else:
                 goal = self.route[self.route_index]
                 if current == goal:
