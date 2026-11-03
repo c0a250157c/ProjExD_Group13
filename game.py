@@ -224,6 +224,7 @@ class Guard:
         self.position = center(route[0])
         self.next_cell: tuple[int, int] | None = None
         self.last_seen: tuple[int, int] | None = None
+        self.search_center: tuple[int, int] | None = None
 
     def can_see(self, player: pg.Vector2) -> bool:
         """主人公が近くにいて、壁に遮られていなければTrue。"""
@@ -232,10 +233,10 @@ class Guard:
 
     def get_search_targets(self) -> list[tuple[int, int]]:
         """最後に見たマスの上下左右から、通れるマスを選ぶ。"""
-        if self.last_seen is None:
+        if self.search_center is None:
             return []
 
-        x, y = self.last_seen
+        x, y = self.search_center
 
         candidates = [
             (x, y - 1),  # 上
@@ -253,13 +254,13 @@ class Guard:
 
     def get_search_goal(self, current: tuple[int, int]) -> tuple[int, int]:
         """捜索中に次に向かうマスを決める。"""
-        if self.last_seen is None:
+        if self.search_center is None:
             return current
 
         # まず最後に見た場所へ向かう
         if not self.search_arrived:
-            if current != self.last_seen:
-                return self.last_seen
+            if current != self.search_center:
+                return self.search_center
 
             self.search_arrived = True
 
@@ -274,6 +275,31 @@ class Guard:
         # 全部調べ終わったら、その場で待つ
         return current
 
+    def hear_noise(
+        self,
+        noise_position: pg.Vector2,
+        radius: float = 240.0,
+    ) -> bool:
+        """音が聞こえる距離なら、その場所の捜索を始める。"""
+        if self.stunned > 0:
+            return False
+
+        distance = self.position.distance_to(noise_position)
+
+        if distance > radius:
+            return False
+
+        self.start_search(cell_at(noise_position))
+        return True
+
+    def start_search(self, cell: tuple[int, int]) -> None:
+        """指定したマスを中心に捜索を始める。"""
+        self.state = "SEARCH"
+        self.search_center = cell
+        self.search_time = 3.0
+        self.search_arrived = False
+        self.search_targets = self.get_search_targets()
+
     def update(self, dt: float, player: pg.Vector2) -> None:
         # 主人公を追跡し、見失ったら最終目撃地点で捜索して巡回へ戻る
         if self.stunned > 0:
@@ -284,12 +310,9 @@ class Guard:
             self.state = "CHASE"
             self.last_seen = cell_at(player)
 
-        elif self.state == "CHASE":
-            # 見失ったので、最後に見た場所を探しに行く
-            self.state = "SEARCH"
-            self.search_time = 3.0
-            self.search_arrived = False
-            self.search_targets = self.get_search_targets()
+        elif self.state == "CHASE" and self.last_seen is not None:
+            # 見失ったので、最後に見た場所を探す
+            self.start_search(self.last_seen)
         # 進行中のマスへ到達してから経路を選び直し、角の壁抜けを防ぐ。
         # マスの中心に着いたら、次の行動を決める
 
@@ -413,6 +436,23 @@ class Game:
                 self.reset()
             elif event.key == pg.K_RETURN and self.state == "paused":
                 self.state = "playing"
+
+            elif event.key == pg.K_n and self.state == "playing":
+                heard = False
+
+                for guard in self.guards:
+                    # 主人公が見える敵は、音より追跡を優先する
+                    if guard.can_see(self.player.position):
+                        continue
+
+                    if guard.hear_noise(self.player.position):
+                        heard = True
+
+                if heard:
+                    self.say("仮の足音：敵が反応した！")
+                else:
+                    self.say("仮の足音：反応した敵はいない")
+
         elif event.type == pg.WINDOWFOCUSLOST and self.state == "playing":
             self.state = "paused"
         elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
