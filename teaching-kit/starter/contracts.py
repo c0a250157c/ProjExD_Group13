@@ -39,6 +39,9 @@ class Stage:
     doors: tuple[DoorSpec, ...]
     switches: tuple[SwitchSpec, ...]
     required_keys: frozenset[str]
+    room_labels: tuple[tuple[str, Cell], ...] = ()
+    desk_cells: tuple[Cell, ...] = ()
+    corridor_cells: tuple[Cell, ...] = ()
 
 
 @dataclass(frozen=True)
