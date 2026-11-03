@@ -16,7 +16,7 @@ def make_school_a() -> Stage:
     for x in (8, 18):
         grid[8][x] = grid[9][x] = 1
     return Stage(
-        stage_id='school_a', name='校舎A', grid=grid,
+        stage_id='school_a', name='研究等A(仮)', grid=grid,
         player_spawn=(4, 3),
         guard_routes=[
             [(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)],
@@ -58,14 +58,14 @@ def make_school_b() -> Stage:
     route_left = [(11, 9), (8, 2), (8, 5), (11, 8), (12, 12), (13, 14)]
     desks_left = ((4, 2), (5, 5), (6, 8), (8, 11))
     return Stage(
-        stage_id='school_b', name='校舎B（左右対称）', grid=grid,
+        stage_id='school_b', name='片柳研究棟', grid=grid,
         player_spawn=(3, 2),
         guard_routes=[route_left, [(COLS - 1 - x, y) for x, y in route_left]],
         keys={'red': (3, 5), 'blue': (7, 11), 'green': (23, 2)},
         exit_cell=(13, 15), heal_cell=(15, 14),
         hiding_spots=((4, 8), (22, 5)), doors=(), switches=(),
         required_keys=frozenset({'red', 'blue', 'green'}),
-        room_labels=(('E104 講義室', (3, 1)), ('E103 講義室', (4, 4)),
+        room_labels=(('E104', (3, 1)), ('E103', (4, 4)),
                      ('E102 講義室', (6, 7)), ('E101 講義室', (7, 10)),
                      ('エントランスホール', (13, 13)), ('バイオホール', (19, 10))),
         desk_cells=desks_left + tuple((COLS - 1 - x, y) for x, y in desks_left),
