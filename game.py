@@ -36,6 +36,13 @@ GUARD_ROUTES = [
     [(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)],
     [(22, 10), (22, 14), (22, 10), (4, 10), (4, 14)],
 ]
+# 隠れる・足音（メンバーA）
+HIDING_SPOTS = [(7, 2), (16, 3), (25, 3), (7, 13), (16, 14), (25, 15)]  # 隠れ場所のマス
+HIDE_RANGE = 24  # 隠れ場所からこの距離(px)以内なら隠れられる
+NOISE_RADIUS = 240  # ダッシュの足音が聞こえる距離(px)
+NOISE_INTERVAL = 0.35  # 足音を出す間隔(秒)
+STEP_SOUND = "sound/boom.wav"  # 足音に使う効果音（授業のex1の音）
+STEP_SOUND_MS = 150  # 足音を鳴らす長さ(ミリ秒)
 
 
 def make_map() -> list[list[int]]:
@@ -118,6 +125,16 @@ class Player:
         self.stamina = MAX_STAMINA
         self.sprinting = False
         self.exhausted = False
+        self.hidden = False  # 隠れている間はTrue
+        self.noise = None  # 今フレームに出た足音（x, y, 半径）。出ていなければNone
+        self.noise_cooldown = 0.0
+
+    def toggle_hide(self) -> None:
+        """Eキー：隠れ場所の近くなら隠れる。すでに隠れていれば出る。"""
+        if self.hidden:
+            self.hidden = False
+        elif any(self.position.distance_to(center(cell)) <= HIDE_RANGE for cell in HIDING_SPOTS):
+            self.hidden = True
 
     def move(self, movement: pg.Vector2) -> None:
         """軸ごとに衝突を解決する。大きな移動は小分けにして壁抜けを防ぐ。"""
@@ -146,6 +163,12 @@ class Player:
     def update(self, dt: float, keys: pg.key.ScancodeWrapper) -> None:
         """入力に応じて移動し、スタミナと無敵時間を更新する。"""
         self.invincible = max(0.0, self.invincible - dt)
+        self.noise = None
+        self.noise_cooldown = max(0.0, self.noise_cooldown - dt)
+        if self.hidden:  # 隠れている間は動けず、ダッシュも足音もなし
+            self.sprinting = False
+            self.stamina = min(MAX_STAMINA, self.stamina + STAMINA_RECOVERY * dt)
+            return
         direction = pg.Vector2(int(keys[pg.K_RIGHT] or keys[pg.K_d])
                               - int(keys[pg.K_LEFT] or keys[pg.K_a]),
                               int(keys[pg.K_DOWN] or keys[pg.K_s])
@@ -160,8 +183,12 @@ class Player:
             self.stamina = max(0.0, self.stamina - STAMINA_COST * dt)
         else:
             self.stamina = min(MAX_STAMINA, self.stamina + STAMINA_RECOVERY * dt)
+        before = self.position.copy()
         if direction.length_squared():
             self.move(direction.normalize() * (DASH_SPEED if self.sprinting else PLAYER_SPEED) * dt)
+        if self.sprinting and self.position != before and self.noise_cooldown == 0.0:
+            self.noise = (self.position.x, self.position.y, NOISE_RADIUS)  # ダッシュで実際に動いたときだけ
+            self.noise_cooldown = NOISE_INTERVAL
 
     def take_damage(self) -> bool:
         """無敵中でなければHPを減らし、被弾したかを返す。"""
@@ -180,6 +207,10 @@ class Player:
 
     def draw(self, screen: pg.Surface) -> None:
         """無敵中は点滅させて描画する。"""
+        if self.hidden:
+            p = self.position
+            pg.draw.rect(screen, TEAL, (int(p.x-11), int(p.y-12), 22, 24), 2, border_radius=8)
+            return
         t = pg.time.get_ticks() / 1000
         if not self.invincible or int(t * 12) % 2 == 0:
             p = self.position
@@ -202,16 +233,19 @@ class Guard:
         self.next_cell: tuple[int, int] | None = None
         self.last_seen: tuple[int, int] | None = None
 
-    def update(self, dt: float, player: pg.Vector2) -> None:
-        """視界内なら追跡し、見失ったら巡回へ戻る。"""
+    def update(self, dt: float, player: pg.Vector2, hidden: bool = False, noise=None) -> None:
+        """視界内なら追跡し、見失ったら巡回へ戻る。隠れているプレイヤーは見えない。足音が聞こえたら音の場所へ向かう。"""
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
             return
-        if self.position.distance_to(player) < 185 and visible(self.position, player):
+        if not hidden and self.position.distance_to(player) < 185 and visible(self.position, player):
             self.alert = 1.8
             self.last_seen = cell_at(player)
         else:
             self.alert = max(0.0, self.alert - dt)
+        if noise and self.position.distance_to((noise[0], noise[1])) <= noise[2]:  # 足音の輪の中にいたら
+            self.alert = 1.8
+            self.last_seen = cell_at(pg.Vector2(noise[0], noise[1]))
         # 進行中のマスへ到達してから経路を選び直し、角の壁抜けを防ぐ。
         if self.next_cell is None:
             current = cell_at(self.position)
@@ -261,12 +295,18 @@ class Game:
                       for size in (14, 16, 18, 20, 24, 32, 42)}
         self.button = pg.Rect(380, 534, 320, 58)
         self.alive = True
+        try:
+            pg.mixer.init()
+            self.step_sound = pg.mixer.Sound(STEP_SOUND)  # 授業のsound_sample.pyと同じ読み込み方
+        except (pg.error, FileNotFoundError):
+            self.step_sound = None  # 音のファイルや音の出力先がなくても動く
         self.reset()
         self.state = 'title'
 
     def reset(self) -> None:
         """再挑戦時にもプレイに関わる全状態を初期化する。"""
         self.player = Player(START_CELL)
+        self.noise_rings: list[list] = []  # 足音の輪 [(x, y, 半径), 残り時間]
         self.time_left = TIME_LIMIT
         self.keys: set[tuple[int, int]] = set()
         self.heal = True
@@ -299,6 +339,8 @@ class Game:
                 self.reset()
             elif event.key == pg.K_RETURN and self.state == 'paused':
                 self.state = 'playing'
+            elif event.key == pg.K_e and self.state == 'playing':
+                self.player.toggle_hide()
         elif event.type == pg.WINDOWFOCUSLOST and self.state == 'playing':
             self.state = 'paused'
         elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
@@ -316,12 +358,21 @@ class Game:
         self.time_left = max(0.0, self.time_left - dt)
         self.message_time = max(0.0, self.message_time - dt)
         self.player.update(dt, keys)
+        if self.player.noise:
+            self.noise_rings.append([self.player.noise, 0.5])
+            if self.step_sound:
+                self.step_sound.play(maxtime=STEP_SOUND_MS)  # 足音を鳴らす
+        for ring in self.noise_rings:
+            ring[1] -= dt
+        self.noise_rings = [ring for ring in self.noise_rings if ring[1] > 0]
         self.collect_items()
         self.update_guards(dt)
         self.check_result()
 
     def collect_items(self) -> None:
-        """鍵と、一度だけ使える回復アイテムの取得を処理する。"""
+        """鍵と、一度だけ使える回復アイテムの取得を処理する。隠れている間は取得しない。"""
+        if self.player.hidden:
+            return
         for key in KEY_CELLS:
             if key not in self.keys and self.player.position.distance_to(center(key)) < 24:
                 self.keys.add(key)
@@ -335,8 +386,9 @@ class Game:
     def update_guards(self, dt: float) -> None:
         """見回り役を移動させ、プレイヤーとの接触を処理する。"""
         for guard in self.guards:
-            guard.update(dt, self.player.position)
-            if self.player.position.distance_to(guard.position) < 25 and self.player.take_damage():
+            guard.update(dt, self.player.position, self.player.hidden, self.player.noise)
+            if (not self.player.hidden and self.player.position.distance_to(guard.position) < 25
+                    and self.player.take_damage()):
                 guard.stunned = GUARD_STUN_TIME
                 self.say('見つかった！ 点滅している間に逃げよう')
 
@@ -388,6 +440,10 @@ class Game:
         for cell in [(2, 2), (6, 2), (11, 2), (15, 2), (20, 2), (24, 2)]:
             p = center(cell)
             pg.draw.rect(self.screen, (54, 73, 85), (int(p.x-12), int(p.y-8), 24, 16), border_radius=3)
+        for cell in HIDING_SPOTS:
+            p = center(cell)
+            pg.draw.rect(self.screen, (40, 58, 74), (int(p.x-13), int(p.y-15), 26, 30), border_radius=3)
+            pg.draw.rect(self.screen, MUTED, (int(p.x-13), int(p.y-15), 26, 30), 2, border_radius=3)
         for cell in KEY_CELLS:
             if cell not in self.keys:
                 p = center(cell)
@@ -471,8 +527,10 @@ class Game:
         self.draw_map()
         for guard in self.guards:
             guard.draw(self.screen, self.fonts[20])
+        for (x, y, radius), life in self.noise_rings:
+            pg.draw.circle(self.screen, GOLD, (int(x), int(y)), int(radius * (1 - life / 0.5)) + 10, 1)
         self.player.draw(self.screen)
-        self.text('移動  WASD / 矢印     ダッシュ  Shift     一時停止  Esc', (54, 762), 16, MUTED)
+        self.text('移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   一時停止  Esc', (54, 762), 16, MUTED)
         self.text('PROTOTYPE / AI生成の試作', (800, 765), 14, MUTED)
         if self.state != 'playing':
             self.draw_overlay()
