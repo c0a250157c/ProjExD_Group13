@@ -126,7 +126,7 @@ class Player:
         self.sprinting = False
         self.exhausted = False
         self.hidden = False  # 隠れている間はTrue
-        self.noise = None  # 今フレームに出た足音（x, y, 半径）。出ていなければNone
+        self.noise: tuple[float, float, float] | None = None  # 今フレームに出た足音（x, y, 半径）。出ていなければNone
         self.noise_cooldown = 0.0
 
     def toggle_hide(self) -> None:
@@ -233,7 +233,7 @@ class Guard:
         self.next_cell: tuple[int, int] | None = None
         self.last_seen: tuple[int, int] | None = None
 
-    def update(self, dt: float, player: pg.Vector2, hidden: bool = False, noise=None) -> None:
+    def update(self, dt: float, player: pg.Vector2, hidden: bool = False, noise: tuple[float, float, float] | None = None) -> None:
         """視界内なら追跡し、見失ったら巡回へ戻る。隠れているプレイヤーは見えない。足音が聞こえたら音の場所へ向かう。"""
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
@@ -297,7 +297,7 @@ class Game:
         self.alive = True
         try:
             pg.mixer.init()
-            self.step_sound = pg.mixer.Sound(STEP_SOUND)  # 授業のsound_sample.pyと同じ読み込み方
+            self.step_sound: pg.mixer.Sound | None = pg.mixer.Sound(STEP_SOUND)  # 授業のsound_sample.pyと同じ読み込み方
         except (pg.error, FileNotFoundError):
             self.step_sound = None  # 音のファイルや音の出力先がなくても動く
         self.reset()
