@@ -168,10 +168,12 @@ class Stage:
         self.doors = [
             Door("red_gate",(22,11),"red"),
             Door("blue_gate",(13,5),"blue"),
-            Door("side_gate",(13,11))
+            Door("front_gate",(13,11)),
+            Door("side_gate",(4,11))
         ]
         self.switches = [
-            Switch("switch_1",(12,3),("side_gate",))
+            Switch("switch_1",(12,3),("front_gate",)),
+            Switch("switch_2",(21,4),("side_gate",))
         ]
 
 
@@ -260,6 +262,14 @@ class Game:
         self.clock = pg.time.Clock()
         self.fonts = {size: pg.font.SysFont('meiryo', size, bold=(size >= 24))
                       for size in (14, 16, 18, 20, 24, 32, 42)}
+        self.switch_sound = pg.mixer.Sound("switch_push.mp3")
+        self.key_sound = pg.mixer.Sound("key_pick.mp3")
+        self.door_open_sound = pg.mixer.Sound("door_open.mp3")
+        self.clear_sound = pg.mixer.Sound("game_beat.mp3")
+        self.switch_sound.set_volume(0.5)
+        self.key_sound.set_volume(1.0)
+        self.door_open_sound.set_volume(0.5)
+        self.clear_sound.set_volume(0.5)
         self.button = pg.Rect(380, 534, 320, 58)
         self.alive = True
         self.reset()
@@ -307,6 +317,7 @@ class Game:
                         if self.gimmicks.handle_event(
                             event, self.player, self.hidden
                         ):
+                            self.switch_sound.play()
                             self.say('スイッチを操作した！ ドアが開いた！')
             elif event.key in (pg.K_RETURN, pg.K_SPACE) and self.state == 'title':
                 self.reset()
@@ -385,6 +396,7 @@ class Game:
         self.gimmicks.update(self.player, self.hidden)
         new_keys = self.gimmicks.inventory - before
         for key_id in new_keys:
+            self.key_sound.play()
             remaining = len(self.stage.required_keys - self.gimmicks.inventory)
             if remaining == 0:
                 self.say('鍵がそろった！ 下中央の出口へ')
@@ -466,17 +478,21 @@ class Game:
                     color = (220, 75, 75)
                 elif door.key_id == "blue":
                     color = (75, 130, 230)
-                else:
+                elif door.door_id == "front_gate":
                     color = (170, 130, 210)
+                elif door.door_id == "side_gate":
+                    color = (255, 140, 0)
                 pg.draw.rect(self.screen,color,(int(p.x - 15), int(p.y - 15), 30, 30),border_radius=5)
                 pg.draw.circle(self.screen, GOLD,(int(p.x), int(p.y)), 3)
         # スイッチの描画
         for switch in self.stage.switches:
             p = center(switch.cell)
-            color = (
-                TEAL if switch.switch_id in self.gimmicks.used_switches
-                else (240, 190, 70)
-            )
+            if switch.switch_id in self.gimmicks.used_switches:
+                color = TEAL  # 押された後は共通で緑色
+            elif switch.switch_id == "switch_1":
+                color = (170, 130, 210)  # side：オレンジ
+            elif switch.switch_id == "switch_2":
+                color = (255, 140, 0)  # front：紫
             pg.draw.circle(self.screen, color,(int(p.x), int(p.y)), 11)
             pg.draw.circle(self.screen, BG,(int(p.x), int(p.y)), 5)
         if self.heal:
@@ -518,6 +534,7 @@ class Game:
                 )
                 if distance < 40:
                     if self.world.open_door(door.door_id):
+                        self.door_open_sound.play()
                         self.say(f'{door.key_id}の鍵でドアを開けた！')
 
     def draw(self) -> None:
@@ -565,6 +582,7 @@ class Game:
                          '鍵を3つ集めて、下中央の出口へ。']
                 label = '探索に戻る  [Esc]'
             elif self.state == 'won':
+                self.clear_sound.play()
                 self.text('脱出成功！', (540, 278), 42, TEAL, True)
                 elapsed = TIME_LIMIT - self.time_left
                 lines = [f'脱出時間  {elapsed:.1f}秒', f'残りHP  {self.hp} / 3',
