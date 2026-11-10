@@ -110,42 +110,152 @@ class Guard:
     def __init__(self, route: list[Cell], world: World) -> None:
         self.route = route
         self.route_index = 1
-        self.alert = 0.0
+        self.search_time = 0.0
+        self.search_arrived = False
+        self.search_targets: list[tuple[int, int]] = []
+        self.state = "PATROL"
         self.stunned = 0.0
         self.position = world.center(route[0])
         self.next_cell: tuple[int, int] | None = None
         self.last_seen: tuple[int, int] | None = None
+        self.search_center: tuple[int, int] | None = None
+
+    def can_see(self, player: Player, world: World) -> bool:
+        """主人公が隠れておらず、近くにいて壁や閉じた扉に遮られていなければTrue。"""
+        distance = self.position.distance_to(player.position)
+        return (not player.hidden and distance < 185
+                and world.visible(self.position, player.position))
+
+    def get_search_targets(self, world: World) -> list[Cell]:
+        """捜索先の上下左右から、通れるマスを選ぶ。"""
+        if self.search_center is None:
+            return []
+
+        x, y = self.search_center
+
+        candidates = [
+            (x, y - 1),  # 上
+            (x, y + 1),  # 下
+            (x - 1, y),  # 左
+            (x + 1, y),  # 右
+        ]
+
+        targets = []
+        for cell in candidates:
+            if world.walkable(cell):
+                targets.append(cell)
+
+        return targets
+
+    def get_search_goal(self, current: tuple[int, int]) -> tuple[int, int]:
+        """捜索中に次に向かうマスを決める。"""
+        if self.search_center is None:
+            return current
+
+        # まず捜索先へ向かう
+        if not self.search_arrived:
+            if current != self.search_center:
+                return self.search_center
+
+            self.search_arrived = True
+
+        # 先頭の候補へ到着したら、一覧から取り除く
+        if self.search_targets and current == self.search_targets[0]:
+            self.search_targets.pop(0)
+
+        # 候補が残っていれば、先頭の場所へ向かう
+        if self.search_targets:
+            return self.search_targets[0]
+
+        # 全部調べ終わったら、その場で待つ
+        return current
+
+    def hear_noise(
+        self,
+        noise_position: pg.Vector2,
+        world: World,
+        radius: float = 240.0,
+    ) -> bool:
+        """音が聞こえる距離なら、その場所の捜索を始める。"""
+        if self.stunned > 0:
+            return False
+
+        distance = self.position.distance_to(noise_position)
+
+        if distance > radius:
+            return False
+
+        self.start_search(world.cell_at(noise_position), world)
+        return True
+
+    def start_search(self, cell: Cell, world: World) -> None:
+        """指定したマスを中心に捜索を始める。"""
+        self.state = "SEARCH"
+        self.search_center = cell
+        self.search_time = 3.0
+        self.search_arrived = False
+        self.search_targets = self.get_search_targets(world)
 
     def update(self, dt: float, player: Player, world: World,
                noises: tuple[NoiseEvent, ...] = ()) -> None:
-        """視界内なら追跡し、見失ったら巡回へ戻る。"""
+        """視認と現在の状態に応じて、追跡・捜索・巡回を更新する。"""
         if self.stunned > 0:
             self.stunned = max(0.0, self.stunned - dt)
             return
-        if (not player.hidden and self.position.distance_to(player.position) < 185
-                and world.visible(self.position, player.position)):
-            self.alert = 1.8
+        if self.can_see(player, world):
+            # 見えている主人公の追跡を、音の捜索より優先する。
+            self.state = "CHASE"
             self.last_seen = world.cell_at(player.position)
         else:
-            self.alert = max(0.0, self.alert - dt)
+            if self.state == "CHASE" and self.last_seen is not None:
+                self.start_search(self.last_seen, world)
+            # 主人公担当から届いた音の位置と範囲を、既存の捜索処理につなぐ。
+            for noise in noises:
+                if self.hear_noise(pg.Vector2(noise.position), world, noise.radius):
+                    break
         # 進行中のマスへ到達してから経路を選び直し、角の壁抜けを防ぐ。
+        # マスの中心に着いたら、次の行動を決める
+
+        # 到着後は、周囲を歩いている間も捜索時間を減らす
+        if self.state == "SEARCH" and self.search_arrived:
+            self.search_time = max(0.0, self.search_time - dt)
+
+            if self.search_time <= 0:
+                self.state = "PATROL"
+
         if self.next_cell is None:
             current = world.cell_at(self.position)
-            if self.alert > 0 and self.last_seen is not None:
+
+            if self.state == "CHASE" and self.last_seen is not None:
                 goal = self.last_seen
+
+            elif self.state == "SEARCH":
+                goal = self.get_search_goal(current)
+
             else:
                 goal = self.route[self.route_index]
                 if current == goal:
                     self.route_index = (self.route_index + 1) % len(self.route)
                     goal = self.route[self.route_index]
+
             path = world.find_path(current, goal)
             if path:
                 self.next_cell = path[0]
+            elif current != goal and self.state == "SEARCH":
+                # 捜索先へ行く道がない場合は、巡回へ戻る
+                self.state = "PATROL"
         if self.next_cell is not None:
             target = world.center(self.next_cell)
             delta = target - self.position
             distance = delta.length()
-            step = (132 if self.alert > 0 else 88) * dt
+            if self.state == "CHASE":
+                speed = 132
+            elif self.state == "SEARCH":
+                speed = 100
+            else:
+                speed = 88
+
+            step = speed * dt
             if distance <= step:
                 self.position = target
                 self.next_cell = None
@@ -153,17 +263,26 @@ class Guard:
                 self.position += delta / distance * step
 
     def draw(self, screen: pg.Surface, font: pg.font.Font) -> None:
-        """追跡中は赤色と感嘆符で表示する。"""
+        """巡回は紫、追跡は赤、捜索は黄色で描き、状態名を表示する。"""
         p = self.position
-        color = RED if self.alert > 0 else (178, 143, 219)
-        pg.draw.circle(screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
-        pg.draw.rect(screen, color, (int(p.x-12), int(p.y-12), 24, 24), border_radius=7)
-        pg.draw.rect(screen, (37, 36, 57), (int(p.x-13), int(p.y-12), 26, 7), border_radius=2)
-        pg.draw.circle(screen, BG, (int(p.x-4), int(p.y)), 2)
-        pg.draw.circle(screen, BG, (int(p.x+4), int(p.y)), 2)
-        if self.alert > 0:
-            image = font.render('!', True, RED)
-            screen.blit(image, image.get_rect(center=(int(p.x), int(p.y-24))))
+        if self.state == "CHASE":
+            color = RED
+        elif self.state == "SEARCH":
+            color = GOLD
+        else:
+            color = (178, 143, 219)
+        pg.draw.circle(screen, (10, 17, 28), (int(p.x), int(p.y + 5)), 15)
+        pg.draw.rect(
+            screen, color, (int(p.x - 12), int(p.y - 12), 24, 24), border_radius=7
+        )
+        pg.draw.rect(
+            screen, (37, 36, 57), (int(p.x - 13), int(p.y - 12), 26, 7), border_radius=2
+        )
+        pg.draw.circle(screen, BG, (int(p.x - 4), int(p.y)), 2)
+        pg.draw.circle(screen, BG, (int(p.x + 4), int(p.y)), 2)
+        # 敵の頭上に状態名を表示する
+        image = font.render(self.state, True, color)
+        screen.blit(image, image.get_rect(center=(int(p.x), int(p.y - 24))))
 
 
 class Game:
@@ -227,6 +346,17 @@ class Game:
                 self.reset()
             elif event.key == pg.K_RETURN and self.state == 'paused':
                 self.state = 'playing'
+            elif event.key == pg.K_n and self.state == 'playing':
+                heard = False
+                for guard in self.guards:
+                    if guard.can_see(self.player, self.world):
+                        continue
+                    if guard.hear_noise(self.player.position, self.world):
+                        heard = True
+                if heard:
+                    self.say('仮の足音：敵が反応した！')
+                else:
+                    self.say('仮の足音：反応した敵はいない')
         elif event.type == pg.WINDOWFOCUSLOST and self.state == 'playing':
             self.state = 'paused'
         elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
