@@ -309,14 +309,13 @@ class Guard:
         screen.blit(image, image.get_rect(center=(int(p.x), int(p.y - 24))))
 
 
-
 class Game:
     """タイトル・プレイ・一時停止・結果を含むゲーム本体。"""
 
     def __init__(self) -> None:
         for stage in STAGES:
             validate_stage(stage)
-        
+
         self.stage_index = 0
         self.screen = pg.display.set_mode((WIDTH, HEIGHT))
         pg.display.set_caption("学校脱出 / NIGHT SCHOOL - prototype")
@@ -415,8 +414,6 @@ class Game:
                     self.reset()
                 elif self.state == 'paused':
                     self.state = 'playing'
-
-    
 
     def update(self, dt: float, keys: pg.key.ScancodeWrapper | None = None) -> None:
         """プレイ中だけ時間・移動・取得・接触・勝敗を更新する。"""
@@ -578,140 +575,6 @@ class Game:
         pg.draw.line(self.screen, color, (x, y + 1), (x + 10, y + 11), 4)
         pg.draw.line(self.screen, color, (x + 8, y + 8), (x + 12, y + 4), 3)
 
-    def draw_keys(self, screen):
-        KEY_COLORS = {"red": (255, 100, 100),"blue": (100, 160, 255),"yellow": (255, 210, 80)}
-        for key_id, cell in self.world.stage.keys.items():
-            if key_id in self.inventory:
-                continue
-        position = self.world.center(cell)
-        color = KEY_COLORS[key_id]
-        self.draw_key(screen, position, color)
-
-    def draw_map(self) -> None:
-        """部屋・壁・アイテム・出口を描画する。"""
-        t = pg.time.get_ticks() / 1000
-        self.world.draw(self.screen)
-        for cell in self.world.stage.hiding_spots:
-            p = self.world.center(cell)
-            pg.draw.rect(self.screen, (40, 58, 74), (int(p.x-13), int(p.y-15), 26, 30), border_radius=3)
-            pg.draw.rect(self.screen, MUTED, (int(p.x-13), int(p.y-15), 26, 30), 2, border_radius=3)
-        for key_id, cell in self.world.stage.keys.items():
-            if key_id not in self.keys:
-                p = self.world.center(cell)
-                pg.draw.circle(self.screen, (77, 66, 42), p, 17 + int(2 * math.sin(t * 3)))
-                self.draw_key(p, GOLD)
-        if self.heal and self.world.stage.heal_cell is not None:
-            p = self.world.center(self.world.stage.heal_cell)
-            pg.draw.rect(self.screen, (41, 94, 84), (int(p.x-12), int(p.y-12), 24, 24), border_radius=5)
-            pg.draw.line(self.screen, TEAL, (p.x-6, p.y), (p.x+6, p.y), 4)
-            pg.draw.line(self.screen, TEAL, (p.x, p.y-6), (p.x, p.y+6), 4)
-        p = self.world.center(self.world.stage.exit_cell)
-        unlocked = self.world.stage.required_keys <= self.keys
-        for y, row in enumerate(GRID):
-            for x, wall in enumerate(row):
-                rect = pg.Rect(int(ORIGIN.x + x * TILE), int(ORIGIN.y + y * TILE), TILE, TILE)
-                if wall:
-                    pg.draw.rect(self.screen, (49, 65, 83), rect)
-                    pg.draw.line(self.screen, (66, 83, 99), rect.topleft, rect.topright, 2)
-                    pg.draw.line(self.screen, (24, 34, 48), rect.bottomleft, rect.bottomright, 3)
-                else:
-                    col = (24, 38, 52) if 6 <= y <= 10 else (29, 44, 57)
-                    pg.draw.rect(self.screen, col, rect)
-                    pg.draw.rect(self.screen, (35, 50, 64), rect, 1)
-        for label, cell in [('教室 A', (4, 1)), ('職員室', (13, 1)), ('理科室', (22, 1)),
-                            ('図書室', (4, 12)), ('玄関', (13, 12)), ('保健室', (22, 12))]:
-            p = center(cell)
-            self.text(label, (int(p.x), int(p.y)), 16, MUTED, True)
-        # 家具は見た目の補助。壁以外は通行可能にしてルールを単純にする。
-        for cell in [(2, 2), (6, 2), (11, 2), (15, 2), (20, 2), (24, 2)]:
-            p = center(cell)
-            pg.draw.rect(self.screen, (54, 73, 85), (int(p.x-12), int(p.y-8), 24, 16), border_radius=3)
-        self.gimmicks.draw_keys(self.screen, self)
-        # ドアの描画
-        for door in self.stage.doors:
-            if self.world.is_door_closed(door.cell):
-                p = center(door.cell)
-                if door.key_id == "red":
-                    color = (220, 75, 75)
-                elif door.key_id == "blue":
-                    color = (75, 130, 230)
-                elif door.door_id == "front_gate":
-                    color = (170, 130, 210)
-                elif door.door_id == "side_gate":
-                    color = (255, 140, 0)
-                pg.draw.rect(self.screen,color,(int(p.x - 15), int(p.y - 15), 30, 30),border_radius=5)
-                pg.draw.circle(self.screen, GOLD,(int(p.x), int(p.y)), 3)
-        # スイッチの描画
-        for switch in self.stage.switches:
-            p = center(switch.cell)
-            if switch.switch_id in self.gimmicks.used_switches:
-                color = TEAL  # 押された後は共通で緑色
-            elif switch.switch_id == "switch_1":
-                color = (170, 130, 210)  # side：オレンジ
-            elif switch.switch_id == "switch_2":
-                color = (255, 140, 0)  # front：紫
-            pg.draw.circle(self.screen, color,(int(p.x), int(p.y)), 11)
-            pg.draw.circle(self.screen, BG,(int(p.x), int(p.y)), 5)
-        if self.heal:
-            pg.draw.rect(self.screen, (41, 94, 84), (int(p.x-12), int(p.y-12), 24, 24), border_radius=5)
-            pg.draw.line(self.screen, TEAL, (p.x-6, p.y), (p.x+6, p.y), 4)
-            pg.draw.line(self.screen, TEAL, (p.x, p.y-6), (p.x, p.y+6), 4)
-        unlocked = self.gimmicks.can_exit()
-        pg.draw.rect(self.screen, (37, 105, 92) if unlocked else (70, 58, 51),
-                     (int(p.x-30), int(p.y-15), 60, 30), border_radius=5)
-        self.text('EXIT' if unlocked else 'LOCK', (int(p.x), int(p.y)), 14,
-                  TEAL if unlocked else GOLD, True)
-        for guard in self.guards:
-            p = guard.position
-            assert p is not None
-            color = RED if guard.alert > 0 else (178, 143, 219)
-            pg.draw.circle(self.screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
-            pg.draw.rect(self.screen, color, (int(p.x-12), int(p.y-12), 24, 24), border_radius=7)
-            pg.draw.rect(self.screen, (37, 36, 57), (int(p.x-13), int(p.y-12), 26, 7), border_radius=2)
-            pg.draw.circle(self.screen, BG, (int(p.x-4), int(p.y)), 2)
-            pg.draw.circle(self.screen, BG, (int(p.x+4), int(p.y)), 2)
-            if guard.alert > 0:
-                self.text('!', (int(p.x), int(p.y-24)), 20, RED, True)
-        if not self.invincible or int(t * 12) % 2 == 0:
-            p = self.player
-            pg.draw.circle(self.screen, (10, 17, 28), (int(p.x), int(p.y+5)), 15)
-            pg.draw.rect(self.screen, GOLD, (int(p.x-11), int(p.y-12), 22, 24), border_radius=8)
-            pg.draw.circle(self.screen, BG, (int(p.x-4), int(p.y-3)), 2)
-            pg.draw.circle(self.screen, BG, (int(p.x+4), int(p.y-3)), 2)
-            pg.draw.rect(self.screen, (212, 139, 72), (int(p.x-8), int(p.y+5), 16, 5), border_radius=2)
-        # 鍵を持っている場合、近づくとドアが開く
-        for door in self.stage.doors:
-            if door.key_id is None:
-                continue
-            if door.key_id in self.gimmicks.inventory:
-                distance = self.player.distance_to(
-                    self.world.center(door.cell)
-                )
-                if distance < 40:
-                    if self.world.open_door(door.door_id):
-                        self.door_open_sound.play()
-                        self.say(f'{door.key_id}の鍵でドアを開けた！')
-
-    def draw_hud(self) -> None:
-        """鍵、HP、残り時間、スタミナを表示する。"""
-        self.text('NIGHT SCHOOL', (54, 23), 24)
-        self.text('夜の学校から脱出', (55, 60), 16, MUTED)
-        self.text(f'KEYS  {len(self.gimmicks.inventory)} / {len(self.stage.required_keys)}',(400, 28), 24, GOLD)
-        self.text('HP', (620, 34), 16, MUTED)
-        for i in range(MAX_HP):
-            pg.draw.rect(self.screen, RED if i < self.player.hp else (55, 46, 57),
-                         (658+i*25, 34, 17, 17), border_radius=5)
-        seconds = math.ceil(self.time_left)
-        self.text(f'{seconds//60:02}:{seconds%60:02}', (884, 20), 32,
-                  RED if seconds < 30 else TEXT)
-        pg.draw.rect(self.screen, (38, 53, 67), (620, 69, 110, 6), border_radius=3)
-        if self.player.stamina > 0:
-            pg.draw.rect(self.screen, TEAL, (620, 69, round(110*self.player.stamina/MAX_STAMINA), 6), border_radius=3)
-        self.text('DASH', (740, 60), 14, MUTED)
-        objective = self.message if self.message_time > 0 else (
-            '下中央の出口へ向かおう！' if self.gimmicks.can_exit() else '鍵を3つ集めて、下中央の出口から脱出')
-        self.text(objective, (55, 98), 16, TEAL)
-
     def draw_overlay(self) -> None:
         """タイトル、一時停止、結果画面を重ねて表示する。"""
         shade = pg.Surface((WIDTH, HEIGHT), pg.SRCALPHA)
@@ -735,7 +598,7 @@ class Game:
             self.text('PAUSED', (540, 270), 42, TEAL, True)
             lines = ['一時停止中です。残り時間は減りません。',
                      'WASD / 矢印：移動　　Shift：ダッシュ',
-                     'E ：隠れる　　F ：スイッチを押す'
+                     'E ：隠れる　　F ：スイッチを押す',
                      '鍵を3つ集めて、下中央の出口へ。']
             label = '探索に戻る  [Esc]'
         elif self.state == 'won':
@@ -785,7 +648,7 @@ class Game:
         self.player.draw(self.screen)
 
         self.text(
-            '移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   一時停止  Esc',
+            '移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   スイッチ  F   一時停止  Esc',
             (54, 762), 16, MUTED
         )
 
