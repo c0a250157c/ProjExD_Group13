@@ -1,0 +1,24 @@
+"""画面とゲーム調整に使う共通設定。"""
+import pygame as pg
+
+WIDTH, HEIGHT = 1080, 800
+TILE = 36
+COLS, ROWS = 27, 17
+ORIGIN = pg.Vector2(54, 132)
+FONT_NAMES = 'meiryo,yugothic,hiraginosans,ヒラキノ角コシックw3,notosanscjkjp,notosansjp'
+TIME_LIMIT = 120.0
+BG = (12, 19, 31)
+TEXT = (230, 239, 246)
+MUTED = (143, 166, 187)
+TEAL = (101, 225, 199)
+GOLD = (255, 205, 105)
+RED = (255, 116, 125)
+MAX_HP = 3
+MAX_STAMINA = 100.0
+PLAYER_SPEED = 160
+DASH_SPEED = 245
+STAMINA_COST = 38
+STAMINA_RECOVERY = 24
+DASH_RECOVERY_THRESHOLD = 30
+INVINCIBLE_TIME = 3.0
+GUARD_STUN_TIME = 1.0
