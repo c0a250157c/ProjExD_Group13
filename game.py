@@ -328,10 +328,10 @@ class Game:
         # 音声の初期化
         try:
             pg.mixer.init()
-            self.switch_sound = pg.mixer.Sound("switch_push.mp3")
-            self.key_sound = pg.mixer.Sound("key_pick.mp3")
-            self.door_open_sound = pg.mixer.Sound("door_open.mp3")
-            self.clear_sound = pg.mixer.Sound("game_beat.mp3")
+            self.switch_sound = pg.mixer.Sound("sound/switch_push.mp3")
+            self.key_sound = pg.mixer.Sound("sound/key_pick.mp3")
+            self.door_open_sound = pg.mixer.Sound("sound/door_open.mp3")
+            self.clear_sound = pg.mixer.Sound("sound/game_beat.mp3")
             self.step_sound = pg.mixer.Sound(STEP_SOUND)
             self.switch_sound.set_volume(0.5)
             self.key_sound.set_volume(1.0)
