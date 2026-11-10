@@ -315,19 +315,35 @@ class Game:
     def __init__(self) -> None:
         for stage in STAGES:
             validate_stage(stage)
+
         self.stage_index = 0
         self.screen = pg.display.set_mode((WIDTH, HEIGHT))
         pg.display.set_caption("学校脱出 / NIGHT SCHOOL - prototype")
         self.clock = pg.time.Clock()
-        self.fonts = {size: pg.font.SysFont(FONT_NAMES, size, bold=(size >= 24))
-                      for size in (14, 16, 18, 20, 24, 32, 42)}
-        self.button = pg.Rect(380, 534, 320, 58)
-        self.alive = True
+        self.fonts = {
+            size: pg.font.SysFont(FONT_NAMES, size, bold=(size >= 24))
+            for size in (14, 16, 18, 20, 24, 32, 42)
+        }
+        # 音声の初期化
         try:
             pg.mixer.init()
-            self.step_sound: pg.mixer.Sound | None = pg.mixer.Sound(STEP_SOUND)  # 授業のsound_sample.pyと同じ読み込み方
+            self.switch_sound = pg.mixer.Sound("sound/switch_push.mp3")
+            self.key_sound = pg.mixer.Sound("sound/key_pick.mp3")
+            self.door_open_sound = pg.mixer.Sound("sound/door_open.mp3")
+            self.clear_sound = pg.mixer.Sound("sound/game_beat.mp3")
+            self.step_sound = pg.mixer.Sound(STEP_SOUND)
+            self.switch_sound.set_volume(0.5)
+            self.key_sound.set_volume(1.0)
+            self.door_open_sound.set_volume(0.5)
+            self.clear_sound.set_volume(0.5)
         except (pg.error, FileNotFoundError):
-            self.step_sound = None  # 音のファイルや音の出力先がなくても動く
+            self.switch_sound = None
+            self.key_sound = None
+            self.door_open_sound = None
+            self.clear_sound = None
+            self.step_sound = None
+        self.button = pg.Rect(380, 534, 320, 58)
+        self.alive = True
         self.reset()
         self.state = 'title'
 
@@ -335,12 +351,22 @@ class Game:
         """再挑戦時にもプレイに関わる全状態を初期化する。"""
         self.world = World(STAGES[self.stage_index])
         stage = self.world.stage
+
         self.player = Player(stage.player_spawn, self.world)
-        self.noise_rings: list[list] = []  # 足音の輪 [NoiseEvent, 残り時間]
+
+        self.noise_rings = []
         self.time_left = TIME_LIMIT
-        self.keys: set[str] = set()  # 仕掛け担当の統合時にinventoryへ移す
+        self.keys = set()
+
         self.heal = stage.heal_cell is not None
-        self.guards = [Guard(route, self.world) for route in stage.guard_routes]
+
+        self.guards = [
+            Guard(route, self.world)
+            for route in stage.guard_routes
+        ]
+
+        self.used_switches = set()
+
         self.state = 'playing'
         self.message = f'教室を探索して、{len(stage.required_keys)}つの鍵を集めよう'
         self.message_time = 4.0
@@ -370,6 +396,8 @@ class Game:
             elif self.state in ('won', 'lost') and event.key == pg.K_t:
                 self.reset()
                 self.state = 'title'
+            elif event.key == pg.K_f and self.state == 'playing':
+                self.use_switch()
             elif event.key in (pg.K_RETURN, pg.K_SPACE) and self.state == 'title':
                 self.reset()
             elif event.key in (pg.K_r, pg.K_RETURN) and self.state in ('won', 'lost'):
@@ -410,18 +438,95 @@ class Game:
         """鍵と、一度だけ使える回復アイテムの取得を処理する。"""
         if self.player.hidden:
             return
+
         stage = self.world.stage
+
+        # 鍵の取得
         for key_id, cell in stage.keys.items():
-            if key_id not in self.keys and self.player.position.distance_to(self.world.center(cell)) < 24:
+            if key_id in self.keys:
+                continue
+
+            distance = self.player.position.distance_to(
+                self.world.center(cell)
+            )
+
+            if distance < 24:
                 self.keys.add(key_id)
+
+                if self.key_sound:
+                    self.key_sound.play()
+
                 remaining = len(stage.required_keys - self.keys)
-                self.say('鍵がそろった！ 下中央の出口へ' if remaining == 0
-                         else f'鍵を見つけた！ あと{remaining}個')
-        if (self.heal and stage.heal_cell is not None
-                and self.player.position.distance_to(self.world.center(stage.heal_cell)) < 25
-                and self.player.recover()):
-            self.heal = False
-            self.say('回復ポイントでHPが1回復した')
+
+                if remaining == 0:
+                    self.say('鍵がそろった！ 下中央の出口へ')
+                else:
+                    self.say(f'鍵を見つけた！ あと{remaining}個')
+
+        # 回復アイテムの取得
+        if stage.heal_cell is not None and self.heal:
+            distance = self.player.position.distance_to(
+                self.world.center(stage.heal_cell)
+            )
+
+            if distance < 25 and self.player.recover():
+                self.heal = False
+                self.say('回復ポイントでHPが1回復した')
+
+        # 鍵を持っている場合、近づくと対応するドアが開く
+        for door in stage.doors:
+            if door.key_id is None:
+                continue
+
+            if door.key_id not in self.keys:
+                continue
+
+            distance = self.player.position.distance_to(
+                self.world.center(door.cell)
+            )
+
+            if distance < 40:
+                if self.world.open_door(door.door_id):
+                    if self.door_open_sound:
+                        self.door_open_sound.play()
+
+                    self.say(f'{door.key_id}の鍵でドアを開けた！')
+
+    def use_switch(self) -> None:
+        """近くにあるスイッチを操作する。"""
+        if self.player.hidden:
+            return
+
+        for switch in self.world.stage.switches:
+            if switch.switch_id in self.used_switches:
+                continue
+
+            distance = self.player.position.distance_to(
+                self.world.center(switch.cell)
+            )
+
+            if distance < 24:
+                opened = False
+
+                for door_id in switch.door_ids:
+                    if self.world.open_door(door_id):
+                        opened = True
+
+                self.used_switches.add(switch.switch_id)
+
+                if opened:
+                    if self.switch_sound:
+                        self.switch_sound.play()
+                    if self.door_open_sound:
+                        self.door_open_sound.play()
+
+                    self.say('スイッチを操作した！ ドアが開いた！')
+                else:
+                    self.say('スイッチを操作した！')
+
+                return
+
+        self.say('近くに操作できるスイッチがない')
 
     def update_guards(self, dt: float, noises: tuple[NoiseEvent, ...]) -> None:
         """見回り役を移動させ、プレイヤーとの接触を処理する。"""
@@ -434,15 +539,27 @@ class Game:
 
     def check_result(self) -> None:
         """HP、残り時間、出口への到達から勝敗を判定する。"""
+        stage = self.world.stage
+
         if self.player.hp <= 0:
-            self.state, self.reason = 'lost', '見回りに捕まってしまった'
+            self.state = 'lost'
+            self.reason = '見回りに捕まってしまった'
+
         elif self.time_left <= 0:
-            self.state, self.reason = 'lost', '時間切れ。校門が閉まってしまった'
-        elif self.player.position.distance_to(self.world.center(self.world.stage.exit_cell)) < 25:
-            if self.world.stage.required_keys <= self.keys:
+            self.state = 'lost'
+            self.reason = '時間切れ。校門が閉まってしまった'
+
+        elif self.player.position.distance_to(
+                self.world.center(stage.exit_cell)) < 25:
+
+            if stage.required_keys <= self.keys:
                 self.state = 'won'
+
+                if self.clear_sound:
+                    self.clear_sound.play()
             else:
-                self.say(f'出口は施錠中。あと{len(self.world.stage.required_keys - self.keys)}個の鍵が必要')
+                remaining = len(stage.required_keys - self.keys)
+                self.say(f'出口は施錠中。あと{remaining}個の鍵が必要')
 
     def text(self, value: str, position: tuple[int, int], size: int = 18,
              color: tuple[int, int, int] = TEXT, centered: bool = False) -> None:
@@ -457,51 +574,6 @@ class Game:
         pg.draw.circle(self.screen, color, (x - 5, y - 3), 7, 3)
         pg.draw.line(self.screen, color, (x, y + 1), (x + 10, y + 11), 4)
         pg.draw.line(self.screen, color, (x + 8, y + 8), (x + 12, y + 4), 3)
-
-    def draw_map(self) -> None:
-        """部屋・壁・アイテム・出口を描画する。"""
-        t = pg.time.get_ticks() / 1000
-        self.world.draw(self.screen)
-        for cell in self.world.stage.hiding_spots:
-            p = self.world.center(cell)
-            pg.draw.rect(self.screen, (40, 58, 74), (int(p.x-13), int(p.y-15), 26, 30), border_radius=3)
-            pg.draw.rect(self.screen, MUTED, (int(p.x-13), int(p.y-15), 26, 30), 2, border_radius=3)
-        for key_id, cell in self.world.stage.keys.items():
-            if key_id not in self.keys:
-                p = self.world.center(cell)
-                pg.draw.circle(self.screen, (77, 66, 42), p, 17 + int(2 * math.sin(t * 3)))
-                self.draw_key(p, GOLD)
-        if self.heal and self.world.stage.heal_cell is not None:
-            p = self.world.center(self.world.stage.heal_cell)
-            pg.draw.rect(self.screen, (41, 94, 84), (int(p.x-12), int(p.y-12), 24, 24), border_radius=5)
-            pg.draw.line(self.screen, TEAL, (p.x-6, p.y), (p.x+6, p.y), 4)
-            pg.draw.line(self.screen, TEAL, (p.x, p.y-6), (p.x, p.y+6), 4)
-        p = self.world.center(self.world.stage.exit_cell)
-        unlocked = self.world.stage.required_keys <= self.keys
-        pg.draw.rect(self.screen, (37, 105, 92) if unlocked else (70, 58, 51),
-                     (int(p.x-30), int(p.y-15), 60, 30), border_radius=5)
-        self.text('EXIT' if unlocked else 'LOCK', (int(p.x), int(p.y)), 14,
-                  TEAL if unlocked else GOLD, True)
-
-    def draw_hud(self) -> None:
-        """鍵、HP、残り時間、スタミナを表示する。"""
-        self.text('NIGHT SCHOOL', (54, 23), 24)
-        self.text(f'夜の学校から脱出 / {self.world.stage.name}', (55, 60), 16, MUTED)
-        self.text(f'KEYS  {len(self.keys)} / {len(self.world.stage.keys)}', (400, 28), 24, GOLD)
-        self.text('HP', (620, 34), 16, MUTED)
-        for i in range(MAX_HP):
-            pg.draw.rect(self.screen, RED if i < self.player.hp else (55, 46, 57),
-                         (658+i*25, 34, 17, 17), border_radius=5)
-        seconds = math.ceil(self.time_left)
-        self.text(f'{seconds//60:02}:{seconds%60:02}', (884, 20), 32,
-                  RED if seconds < 30 else TEXT)
-        pg.draw.rect(self.screen, (38, 53, 67), (620, 69, 110, 6), border_radius=3)
-        if self.player.stamina > 0:
-            pg.draw.rect(self.screen, TEAL, (620, 69, round(110*self.player.stamina/MAX_STAMINA), 6), border_radius=3)
-        self.text('DASH', (740, 60), 14, MUTED)
-        objective = self.message if self.message_time > 0 else (
-            '下中央の出口へ向かおう！' if self.world.stage.required_keys <= self.keys else '鍵を3つ集めて、下中央の出口から脱出')
-        self.text(objective, (55, 98), 16, TEAL)
 
     def draw_overlay(self) -> None:
         """タイトル、一時停止、結果画面を重ねて表示する。"""
@@ -518,6 +590,7 @@ class Game:
                 self.text(f'[{index + 1}] {stage.name}', (380 + index * 320, 333), 16, color, True)
             lines = ['3つの鍵を集めて、下中央の出口を開こう。',
                      '紫の見回り役は、近づくと赤くなって追ってくる。',
+                     'スイッチを押さないと開かないドアがある。',
                      'Shiftでダッシュ。＋でHPを1回復。',
                      '制限時間は120秒。捕まるとHPが1減る。']
             label = '探索を始める  [Enter]'
@@ -525,6 +598,7 @@ class Game:
             self.text('PAUSED', (540, 270), 42, TEAL, True)
             lines = ['一時停止中です。残り時間は減りません。',
                      'WASD / 矢印：移動　　Shift：ダッシュ',
+                     'E ：隠れる　　F ：スイッチを押す',
                      '鍵を3つ集めて、下中央の出口へ。']
             label = '探索に戻る  [Esc]'
         elif self.state == 'won':
@@ -553,18 +627,221 @@ class Game:
     def draw(self) -> None:
         """背景、キャラクター、案内を順に描画する。"""
         self.screen.fill(BG)
+
         self.draw_hud()
         self.draw_map()
+
+        # 見回り役
         for guard in self.guards:
             guard.draw(self.screen, self.fonts[20])
+
+        # 足音の範囲
         for noise, life in self.noise_rings:
-            pg.draw.circle(self.screen, GOLD, (int(noise.position[0]), int(noise.position[1])),
-                           int(noise.radius * (1 - life / 0.5)) + 10, 1)
+            pg.draw.circle(
+                self.screen, GOLD,
+                (int(noise.position[0]), int(noise.position[1])),
+                int(noise.radius * (1 - life / 0.5)) + 10,
+                1
+            )
+
+        # プレイヤー
         self.player.draw(self.screen)
-        self.text('移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   一時停止  Esc', (54, 762), 16, MUTED)
+
+        self.text(
+            '移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   スイッチ  F   一時停止  Esc',
+            (54, 762), 16, MUTED
+        )
+
+        # タイトル・一時停止・結果画面
         if self.state != 'playing':
             self.draw_overlay()
+
         pg.display.flip()
+
+
+    def draw_map(self) -> None:
+        """部屋・壁・アイテム・ドア・スイッチ・出口を描画する。"""
+        t = pg.time.get_ticks() / 1000
+        stage = self.world.stage
+
+        self.world.draw(self.screen)
+
+        # 隠れ場所
+        for cell in stage.hiding_spots:
+            p = self.world.center(cell)
+            pg.draw.rect(
+                self.screen, (40, 58, 74),
+                (int(p.x-13), int(p.y-15), 26, 30),
+                border_radius=3
+            )
+            pg.draw.rect(
+                self.screen, MUTED,
+                (int(p.x-13), int(p.y-15), 26, 30),
+                2, border_radius=3
+            )
+
+        # 鍵
+        key_colors = {
+            "red": (255, 100, 100),
+            "blue": (100, 160, 255),
+            "green": (100, 210, 150),
+            "yellow": (255, 210, 80),
+        }
+
+        for key_id, cell in stage.keys.items():
+            if key_id not in self.keys:
+                p = self.world.center(cell)
+                color = key_colors.get(key_id, GOLD)
+
+                pg.draw.circle(
+                    self.screen, (77, 66, 42),
+                    (int(p.x), int(p.y)),
+                    17 + int(2 * math.sin(t * 3))
+                )
+                self.draw_key(p, color)
+
+        # 回復ポイント
+        if self.heal and stage.heal_cell is not None:
+            p = self.world.center(stage.heal_cell)
+
+            pg.draw.rect(
+                self.screen, (41, 94, 84),
+                (int(p.x-12), int(p.y-12), 24, 24),
+                border_radius=5
+            )
+            pg.draw.line(
+                self.screen, TEAL,
+                (p.x-6, p.y), (p.x+6, p.y), 4
+            )
+            pg.draw.line(
+                self.screen, TEAL,
+                (p.x, p.y-6), (p.x, p.y+6), 4
+            )
+
+        # ドア
+        for door in stage.doors:
+            if door.door_id in self.world.opened_doors:
+                continue
+
+            p = self.world.center(door.cell)
+
+            if door.key_id == "red":
+                color = (220, 75, 75)
+            elif door.key_id == "blue":
+                color = (75, 130, 230)
+            elif door.door_id == "front_gate":
+                color = (170, 130, 210)
+            elif door.door_id == "side_gate":
+                color = (255, 140, 0)
+            else:
+                color = GOLD
+
+            pg.draw.rect(
+                self.screen, color,
+                (int(p.x-15), int(p.y-15), 30, 30),
+                border_radius=5
+            )
+            pg.draw.circle(
+                self.screen, GOLD,
+                (int(p.x), int(p.y)), 3
+            )
+
+        # スイッチ
+        for switch in stage.switches:
+            p = self.world.center(switch.cell)
+
+            if switch.switch_id in self.used_switches:
+                color = TEAL
+            elif "front_gate" in switch.door_ids:
+                color = (170, 130, 210)  # front：紫
+            elif "side_gate" in switch.door_ids:
+                color = (255, 140, 0)  # side：オレンジ
+            else:
+                color = GOLD
+
+            pg.draw.circle(
+                self.screen, color,
+                (int(p.x), int(p.y)), 11
+            )
+            pg.draw.circle(
+                self.screen, BG,
+                (int(p.x), int(p.y)), 5
+            )
+
+        # 出口
+        p = self.world.center(stage.exit_cell)
+        unlocked = stage.required_keys <= self.keys
+
+        pg.draw.rect(
+            self.screen,
+            (37, 105, 92) if unlocked else (70, 58, 51),
+            (int(p.x-30), int(p.y-15), 60, 30),
+            border_radius=5
+        )
+
+        self.text(
+            'EXIT' if unlocked else 'LOCK',
+            (int(p.x), int(p.y)),
+            14,
+            TEAL if unlocked else GOLD,
+            True
+        )
+
+    def draw_hud(self) -> None:
+        """鍵、HP、残り時間、スタミナを表示する。"""
+        stage = self.world.stage
+
+        self.text('NIGHT SCHOOL', (54, 23), 24)
+        self.text('夜の学校から脱出', (55, 60), 16, MUTED)
+
+        self.text(
+            f'KEYS  {len(self.keys)} / {len(stage.required_keys)}',
+            (400, 28), 24, GOLD
+        )
+
+        self.text('HP', (620, 34), 16, MUTED)
+
+        for i in range(MAX_HP):
+            pg.draw.rect(
+                self.screen,
+                RED if i < self.player.hp else (55, 46, 57),
+                (658+i*25, 34, 17, 17),
+                border_radius=5
+            )
+
+        seconds = math.ceil(self.time_left)
+
+        self.text(
+            f'{seconds//60:02}:{seconds%60:02}',
+            (884, 20), 32,
+            RED if seconds < 30 else TEXT
+        )
+
+        pg.draw.rect(
+            self.screen, (38, 53, 67),
+            (620, 69, 110, 6),
+            border_radius=3
+        )
+
+        if self.player.stamina > 0:
+            pg.draw.rect(
+                self.screen, TEAL,
+                (
+                    620, 69,
+                    round(110*self.player.stamina/MAX_STAMINA), 6
+                ),
+                border_radius=3
+            )
+
+        self.text('DASH', (740, 60), 14, MUTED)
+
+        objective = self.message if self.message_time > 0 else (
+            '下中央の出口へ向かおう！'
+            if stage.required_keys <= self.keys
+            else '鍵を3つ集めて、下中央の出口から脱出'
+        )
+
+        self.text(objective, (55, 98), 16, TEAL)
 
     def run(self) -> None:
         """毎秒60回を目安に入力・更新・描画する。"""

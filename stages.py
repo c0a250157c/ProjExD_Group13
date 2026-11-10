@@ -1,8 +1,6 @@
 """校舎の配置データ。プレイ中の取得・開放状態は持たせない。"""
-from contracts import Stage
+from contracts import Stage, DoorSpec, SwitchSpec
 from settings import COLS, ROWS
-
-
 def make_school_a() -> Stage:
     """従来の教室配置と巡回経路を保った校舎A。"""
     grid = [[int(x in (0, COLS - 1) or y in (0, ROWS - 1))
@@ -20,11 +18,23 @@ def make_school_a() -> Stage:
         player_spawn=(4, 3),
         guard_routes=[
             [(13, 7), (4, 7), (4, 3), (4, 7), (22, 7), (22, 3)],
-            [(22, 10), (22, 14), (22, 10), (4, 10), (4, 14)],
+            [(22, 10), (22, 9), (22, 8), (22, 9),
+             (22, 10), (18, 10), (13, 10), (9, 10),
+             (4, 10), (4, 9), (4, 8), (4, 9), (4, 10)],
         ],
         keys={'red': (22, 3), 'blue': (4, 14), 'green': (22, 14)},
         exit_cell=(13, 15), heal_cell=(24, 13),
-        hiding_spots=((6, 3),), doors=(), switches=(),
+        hiding_spots=((6, 3),), 
+        doors=(
+                DoorSpec("red_gate", (22, 11), "red"),
+                DoorSpec("blue_gate", (13, 5), "blue"),
+                DoorSpec("front_gate", (13, 11)),
+                DoorSpec("side_gate", (4, 11)),
+            ), 
+        switches=(
+            SwitchSpec("switch_1", (12, 3), ("front_gate",)),
+            SwitchSpec("switch_2", (21, 4), ("side_gate",)),
+        ),
         required_keys=frozenset({'red', 'blue', 'green'}),
         room_labels=(('教室 A', (4, 1)), ('職員室', (13, 1)), ('理科室', (22, 1)),
                      ('図書室', (4, 12)), ('玄関', (13, 12)), ('保健室', (22, 12))),
