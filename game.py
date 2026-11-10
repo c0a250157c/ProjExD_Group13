@@ -10,6 +10,7 @@ from settings import (
     WIDTH, HEIGHT, TIME_LIMIT, BG, TEXT, MUTED, TEAL, GOLD, RED, FONT_NAMES,
     MAX_HP, MAX_STAMINA, PLAYER_SPEED, DASH_SPEED, STAMINA_COST,
     STAMINA_RECOVERY, DASH_RECOVERY_THRESHOLD, INVINCIBLE_TIME, GUARD_STUN_TIME,
+    HIDE_RANGE, NOISE_RADIUS, NOISE_INTERVAL, STEP_SOUND, STEP_SOUND_MS,
 )
 from stages import STAGES
 from world import World, validate_stage
@@ -30,6 +31,15 @@ class Player:
         self.stamina = MAX_STAMINA
         self.sprinting = False
         self.exhausted = False
+        self.noise_cooldown = 0.0
+
+    def toggle_hide(self, world: World) -> None:
+        """Eキー：隠れ場所の近くなら隠れる。すでに隠れていれば出る。"""
+        if self.hidden:
+            self.hidden = False
+        elif any(self.position.distance_to(world.center(cell)) <= HIDE_RANGE
+                 for cell in world.stage.hiding_spots):
+            self.hidden = True
 
     def move(self, movement: pg.Vector2, world: World) -> None:
         """軸ごとに衝突を解決する。大きな移動は小分けにして壁抜けを防ぐ。"""
@@ -59,6 +69,11 @@ class Player:
                world: World) -> tuple[NoiseEvent, ...]:
         """入力に応じて移動し、スタミナと無敵時間を更新する。"""
         self.invincible = max(0.0, self.invincible - dt)
+        self.noise_cooldown = max(0.0, self.noise_cooldown - dt)
+        if self.hidden:  # 隠れている間は動けず、ダッシュも足音もなし
+            self.sprinting = False
+            self.stamina = min(MAX_STAMINA, self.stamina + STAMINA_RECOVERY * dt)
+            return ()
         direction = pg.Vector2(int(keys[pg.K_RIGHT] or keys[pg.K_d])
                               - int(keys[pg.K_LEFT] or keys[pg.K_a]),
                               int(keys[pg.K_DOWN] or keys[pg.K_s])
@@ -73,9 +88,14 @@ class Player:
             self.stamina = max(0.0, self.stamina - STAMINA_COST * dt)
         else:
             self.stamina = min(MAX_STAMINA, self.stamina + STAMINA_RECOVERY * dt)
+        before = self.position.copy()
         if direction.length_squared():
             self.move(direction.normalize() * (DASH_SPEED if self.sprinting else PLAYER_SPEED) * dt, world)
-        return ()  # 足音は主人公担当が追加する
+        if self.sprinting and self.position != before and self.noise_cooldown == 0.0:
+            self.noise_cooldown = NOISE_INTERVAL
+            # ダッシュで実際に動いたときだけ、その場所の足音を返す
+            return (NoiseEvent((self.position.x, self.position.y), NOISE_RADIUS),)
+        return ()
 
     def take_damage(self) -> bool:
         """無敵中でなければHPを減らし、被弾したかを返す。"""
@@ -94,6 +114,10 @@ class Player:
 
     def draw(self, screen: pg.Surface) -> None:
         """無敵中は点滅させて描画する。"""
+        if self.hidden:
+            p = self.position
+            pg.draw.rect(screen, TEAL, (int(p.x-11), int(p.y-12), 22, 24), 2, border_radius=8)
+            return
         t = pg.time.get_ticks() / 1000
         if not self.invincible or int(t * 12) % 2 == 0:
             p = self.position
@@ -299,6 +323,11 @@ class Game:
                       for size in (14, 16, 18, 20, 24, 32, 42)}
         self.button = pg.Rect(380, 534, 320, 58)
         self.alive = True
+        try:
+            pg.mixer.init()
+            self.step_sound: pg.mixer.Sound | None = pg.mixer.Sound(STEP_SOUND)  # 授業のsound_sample.pyと同じ読み込み方
+        except (pg.error, FileNotFoundError):
+            self.step_sound = None  # 音のファイルや音の出力先がなくても動く
         self.reset()
         self.state = 'title'
 
@@ -307,6 +336,7 @@ class Game:
         self.world = World(STAGES[self.stage_index])
         stage = self.world.stage
         self.player = Player(stage.player_spawn, self.world)
+        self.noise_rings: list[list] = []  # 足音の輪 [NoiseEvent, 残り時間]
         self.time_left = TIME_LIMIT
         self.keys: set[str] = set()  # 仕掛け担当の統合時にinventoryへ移す
         self.heal = stage.heal_cell is not None
@@ -346,17 +376,8 @@ class Game:
                 self.reset()
             elif event.key == pg.K_RETURN and self.state == 'paused':
                 self.state = 'playing'
-            elif event.key == pg.K_n and self.state == 'playing':
-                heard = False
-                for guard in self.guards:
-                    if guard.can_see(self.player, self.world):
-                        continue
-                    if guard.hear_noise(self.player.position, self.world):
-                        heard = True
-                if heard:
-                    self.say('仮の足音：敵が反応した！')
-                else:
-                    self.say('仮の足音：反応した敵はいない')
+            elif event.key == pg.K_e and self.state == 'playing':
+                self.player.toggle_hide(self.world)
         elif event.type == pg.WINDOWFOCUSLOST and self.state == 'playing':
             self.state = 'paused'
         elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
@@ -374,6 +395,13 @@ class Game:
         self.time_left = max(0.0, self.time_left - dt)
         self.message_time = max(0.0, self.message_time - dt)
         noises = self.player.update(dt, keys, self.world)
+        for noise in noises:
+            self.noise_rings.append([noise, 0.5])
+            if self.step_sound:
+                self.step_sound.play(maxtime=STEP_SOUND_MS)  # 足音を鳴らす
+        for ring in self.noise_rings:
+            ring[1] -= dt
+        self.noise_rings = [ring for ring in self.noise_rings if ring[1] > 0]
         self.collect_items()
         self.update_guards(dt, noises)
         self.check_result()
@@ -434,6 +462,10 @@ class Game:
         """部屋・壁・アイテム・出口を描画する。"""
         t = pg.time.get_ticks() / 1000
         self.world.draw(self.screen)
+        for cell in self.world.stage.hiding_spots:
+            p = self.world.center(cell)
+            pg.draw.rect(self.screen, (40, 58, 74), (int(p.x-13), int(p.y-15), 26, 30), border_radius=3)
+            pg.draw.rect(self.screen, MUTED, (int(p.x-13), int(p.y-15), 26, 30), 2, border_radius=3)
         for key_id, cell in self.world.stage.keys.items():
             if key_id not in self.keys:
                 p = self.world.center(cell)
@@ -525,8 +557,11 @@ class Game:
         self.draw_map()
         for guard in self.guards:
             guard.draw(self.screen, self.fonts[20])
+        for noise, life in self.noise_rings:
+            pg.draw.circle(self.screen, GOLD, (int(noise.position[0]), int(noise.position[1])),
+                           int(noise.radius * (1 - life / 0.5)) + 10, 1)
         self.player.draw(self.screen)
-        self.text('移動  WASD / 矢印     ダッシュ  Shift     一時停止  Esc', (54, 762), 16, MUTED)
+        self.text('移動  WASD / 矢印   ダッシュ  Shift   隠れる・出る  E   一時停止  Esc', (54, 762), 16, MUTED)
         if self.state != 'playing':
             self.draw_overlay()
         pg.display.flip()
