@@ -6,6 +6,6 @@ if not exist ".venv\Scripts\python.exe" (
   pause
   exit /b 1
 )
-".venv\Scripts\python.exe" game.py
+".venv\Scripts\python.exe" school_escape.py
 if errorlevel 1 pause
 endlocal
