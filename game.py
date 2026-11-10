@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import json ###
 import math
 import os
 
@@ -309,6 +309,63 @@ class Guard:
         screen.blit(image, image.get_rect(center=(int(p.x), int(p.y - 24))))
 
 
+SAVE_PATH = 'saves/ranking.json'
+
+
+def load_records():
+    """保存されたランキングを読み込み、正しいデータだけを返す。"""
+    try:
+        with open(SAVE_PATH, 'r', encoding='utf-8') as f:
+            records = json.load(f)
+
+        if not isinstance(records, list):
+            return []
+
+        return [
+            r for r in records
+            if isinstance(r, dict)
+            and isinstance(r.get('stage_id'), str)
+            and type(r.get('score')) == int
+            and r['score'] >= 0
+            and type(r.get('time_left')) in (int, float)
+            and math.isfinite(r['time_left'])
+            and r['time_left'] >= 0
+            and type(r.get('hp')) == int
+            and 0 <= r['hp'] <= 3
+        ]
+
+    except (OSError, ValueError, TypeError):
+        return []
+
+
+def save_record(result):
+    """クリア結果をランキングに追加し、上位5件を保存する。"""
+    if not result['won']:
+        return
+     # 既存のランキングを読み込み、新しい記録を追加する。
+    records = load_records()
+    records.append({
+        'stage_id': 'night_school',
+        'score': result['score'],
+        'time_left': result['time_left'],
+        'hp': result['hp']
+    })
+      # 得点と残り時間を基準にランキングを高い順に並べる。
+    records.sort(
+        key=lambda r: (r['score'], r['time_left']),
+        reverse=True
+    )
+
+    os.makedirs('saves', exist_ok=True)
+
+    try:
+         # 一時ファイルにランキングを書き込む。
+        with open(SAVE_PATH + '.tmp', 'w', encoding='utf-8') as f:
+            json.dump(records[:5], f, ensure_ascii=False, indent=4)
+              # 書き込み完了後、一時ファイルを保存先に置き換える。
+        os.replace(SAVE_PATH + '.tmp', SAVE_PATH)
+    except OSError:
+        pass
 class Game:
     """タイトル・プレイ・一時停止・結果を含むゲーム本体。"""
 
@@ -371,6 +428,9 @@ class Game:
         self.message = f'教室を探索して、{len(stage.required_keys)}つの鍵を集めよう'
         self.message_time = 4.0
         self.reason = ''
+        self.damage_count = 0 ###
+        self.result = None   ###
+        self.ranking = load_records() ###
 
     def say(self, message: str) -> None:
         """一時的な案内を表示する。"""
@@ -535,6 +595,7 @@ class Game:
             if (not self.player.hidden and self.player.position.distance_to(guard.position) < 25
                     and self.player.take_damage()):
                 guard.stunned = GUARD_STUN_TIME
+                self.damage_count += 1
                 self.say('見つかった！ 点滅している間に逃げよう')
 
     def check_result(self) -> None:
@@ -551,7 +612,6 @@ class Game:
 
         elif self.player.position.distance_to(
                 self.world.center(stage.exit_cell)) < 25:
-
             if stage.required_keys <= self.keys:
                 self.state = 'won'
 
@@ -561,6 +621,33 @@ class Game:
                 remaining = len(stage.required_keys - self.keys)
                 self.say(f'出口は施錠中。あと{remaining}個の鍵が必要')
 
+        if self.state in ('won', 'lost') and self.result is None:
+            won = self.state == 'won'
+
+            self.score = 0
+
+            if won:
+                self.score = (300 + int(self.time_left) * 10
+                              + self.player.hp * 100 + len(self.keys) * 50)
+
+                if self.damage_count == 0:
+                    self.score += 200
+
+                if self.time_left >= 60:
+                    self.score += 100
+
+            self.result = {
+                'won': won,
+                'score': self.score,
+                'time_left': self.time_left,
+                'hp': self.player.hp
+            }
+
+            if won:
+                save_record(self.result)
+                self.ranking = load_records()
+
+             
     def text(self, value: str, position: tuple[int, int], size: int = 18,
              color: tuple[int, int, int] = TEXT, centered: bool = False) -> None:
         """指定の位置へ文字を描画する。"""
@@ -580,7 +667,7 @@ class Game:
         shade = pg.Surface((WIDTH, HEIGHT), pg.SRCALPHA)
         shade.fill((5, 11, 20, 195))
         self.screen.blit(shade, (0, 0))
-        panel = pg.Rect(220, 180, 640, 465)
+        panel = pg.Rect(220, 130, 640, 600)
         pg.draw.rect(self.screen, (22, 35, 51), panel, border_radius=22)
         pg.draw.rect(self.screen, (68, 94, 112), panel, 1, border_radius=22)
         if self.state == 'title':
@@ -602,11 +689,34 @@ class Game:
                      '鍵を3つ集めて、下中央の出口へ。']
             label = '探索に戻る  [Esc]'
         elif self.state == 'won':
-            self.text('脱出成功！', (540, 278), 42, TEAL, True)
-            elapsed = TIME_LIMIT - self.time_left
-            lines = [f'脱出時間  {elapsed:.1f}秒', f'残りHP  {self.player.hp} / {MAX_HP}',
-                     '鍵をそろえて、無事に学校を出られた。']
+            self.text('脱出成功！', (540, 220), 42, TEAL, True)
+
+            self.text(f'合計得点：{self.score}点',
+                      (540, 290), 24, GOLD, True)
+
+            self.text(
+                'ミッション1：ダメージなし ' +
+                ('達成' if self.damage_count == 0 else '未達成'),
+                (540, 340), 18, MUTED, True
+            )
+
+            self.text(
+                'ミッション2：残り60秒以上 ' +
+                ('達成' if self.time_left >= 60 else '未達成'),
+                (540, 375), 18, MUTED, True
+            )
+
+            self.text('ランキング TOP 5', (540, 425), 20, GOLD, True)
+
+            for i, record in enumerate(self.ranking):
+                self.text(
+                    f'{i+1}位  {record["score"]}点',
+                    (540, 460+i*25), 16, MUTED, True
+                )
+
+            self.button = pg.Rect(380, 650, 320, 50)
             label = 'もう一度遊ぶ  [R]'
+            lines = []
         else:
             self.text('脱出失敗', (540, 278), 42, RED, True)
             lines = [self.reason, f'集めた鍵  {len(self.keys)} / {len(self.world.stage.keys)}',
@@ -622,7 +732,8 @@ class Game:
             hint = 'T：タイトルへ戻ってステージ選択　　×：終了'
         else:
             hint = '終了するにはウィンドウの × を押す'
-        self.text(hint, (540, 613), 14, MUTED, True)
+        hint_y = 735 if self.state in ('won', 'lost') else 613
+        self.text(hint, (540, hint_y), 14, MUTED, True)
 
     def draw(self) -> None:
         """背景、キャラクター、案内を順に描画する。"""
@@ -840,8 +951,10 @@ class Game:
             if stage.required_keys <= self.keys
             else '鍵を3つ集めて、下中央の出口から脱出'
         )
-
+                
         self.text(objective, (55, 98), 16, TEAL)
+
+
 
     def run(self) -> None:
         """毎秒60回を目安に入力・更新・描画する。"""
@@ -854,6 +967,7 @@ class Game:
             self.update(dt)
             self.draw()
 
+       
 
 def main() -> None:
     """Pygameを初期化して起動し、終了処理を保証する。"""
