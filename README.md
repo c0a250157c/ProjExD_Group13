@@ -1,4 +1,4 @@
-# 夜の学校から脱出 - School Escape Demo
+# 夜の学校から脱出 - School Escape
 
 ![ゲーム画面](preview_play.png)
 
