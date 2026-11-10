@@ -78,6 +78,10 @@
 
 #### 主人公担当との接続
 
+プレイヤー担当向け：[足音を敵AIにつなぐガイド](docs/footstep_integration.txt)
+
+変更する場所、通知の実装例、確認手順をまとめています。例はゲーム本体には未適用です。
+
 - Guard.updateは、Player・World・NoiseEventの一覧を受け取ります。
 - Player.updateが返すNoiseEvent（positionとradius）は、Gameから敵へ渡されます。
 - 現時点のPlayer.updateは音の通知を返さないため、走行時の足音発生は主人公担当の実装後に確認します。
